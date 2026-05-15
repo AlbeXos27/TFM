@@ -34,7 +34,6 @@ def extraer_info_paper(texto):
         return None
 
 def analizar_dataset_con_contexto_previo(nombre_file, muestra, contexto_manual):
-    """La IA usa el contexto que TÚ escribiste para explicar el dataset."""
     prompt = f"""
     Contexto de la investigación (definido por el usuario): {contexto_manual}
     

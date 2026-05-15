@@ -1,14 +1,11 @@
 {
-    "investigacion": {
-        "titulo": "Computational Thinking Measurement of CS University Students",
-        "autores": "['Raquel Hijón-Neira', 'Celeste Pizarro', 'John French', 'Daniel Palacios-Alonso', 'Emre Çoban']",
-        "contexto_general": "La investigación presenta un estudio sobre la medición del pensamiento computacional en estudiantes universitarios de ciencias de la computación. El estudio introduce el método UniCTCheck, que utiliza dos instrumentos: la aplicación web CTScore y la escala psicométrica CTProg, para evaluar siete componentes clave del pensamiento computacional y seis habilidades de programación en estudiantes de ciencias de la computación. El objetivo es precisar la medición de estas habilidades y destaca la importancia del pensamiento computacional en la educación. La investigación se llevó a cabo en la Universidad Rey Juan Carlos y la Universidad Tecnológica del Atlántico en Galway, involucrando una muestra diversa de estudiantes de diferentes niveles y especializaciones. El estudio busca abordar preguntas de investigación relacionadas con la variación en las habilidades de pensamiento computacional y programación en función del género, el nivel universitario y la ubicación.",
-        "fecha_procesamiento": "2026-05-15 14:35"
-    },
-    "datasets_asociados": [
+    "titulo": "Computational Thinking Measurement of CS University Students",
+    "autores": "['Raquel Hijón-Neira', 'Celeste Pizarro', 'John French', 'Daniel Palacios-Alonso', 'Emre Çoban']",
+    "contexto_general": "Este artículo introduce UniCTCheck, un método diseñado para evaluar los componentes principales del pensamiento computacional en estudiantes de ciencias de la computación. Utiliza dos instrumentos clave: la aplicación web CTScore y la escala psicométrica CTProg, para evaluar siete componentes fundamentales del pensamiento computacional y seis habilidades de programación esenciales para los estudiantes de ciencias de la computación.",
+    "datasets": [
         {
-            "nombre_archivo": "dataset2.xlsx",
-            "descripcion_ia": "El archivo \"dataset2.xlsx\" proporciona información sobre la medición del pensamiento computacional y habilidades de programación en estudiantes universitarios de ciencias de la computación. Los datos incluyen puntuaciones pre y post-test para diferentes componentes del pensamiento computacional y habilidades de programación, como bucles, condicionales y funciones. Esta información es fundamental para evaluar la efectividad del método UniCTCheck y analizar las variaciones en las habilidades de los estudiantes en función del género, nivel universitario y ubicación."
+            "archivo": "dataset2.xlsx",
+            "descripcion": "El archivo de datos \"dataset2.xlsx\" contiene información recopilada sobre los estudiantes de ciencias de la computación que participaron en la evaluación de los componentes del pensamiento computacional utilizando UniCTCheck. Este archivo es fundamental para analizar y obtener resultados sobre la efectividad de la evaluación del pensamiento computacional y las habilidades de programación en los estudiantes."
         }
     ]
 }
