@@ -58,14 +58,10 @@ def procesar_y_estructurar_indice():
                     datos = json.load(f)
                 
                 titulo_inv = datos.get("titulo", carpeta_inv.name)
-                autores = datos.get("autores", "Autores no especificados")
+                autores = datos.get("autores", [])
                 contexto_general = datos.get("contexto_general", "")
                 datasets = datos.get("datasets", [])
-
-                if isinstance(autores, list):
-                    autores_str = ", ".join(autores)
-                else:
-                    autores_str = str(autores).replace("[", "").replace("]", "").replace("'", "")
+                autores_str = ", ".join([a.get("nombre", "") for a in autores])
 
                 for ds in datasets:
                     nombre_archivo = ds.get("archivo")
