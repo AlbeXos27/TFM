@@ -129,8 +129,32 @@ if 'descripciones_datasets' not in st.session_state: st.session_state.descripcio
 if 'autores_orcid_automaticos' not in st.session_state: st.session_state.autores_orcid_automaticos = {}
 if 'orcid_confirmados_manual' not in st.session_state: st.session_state.orcid_confirmados_manual = {}
 
-# --- PASO 1: CONTEXTO ---
-st.header("1. Definir Información de la Investigación")
+# --- PASO 1: Cargar y Analizar Datasets ---
+st.divider()
+st.header("1. Cargar y Analizar Datasets")
+up_datasets = st.file_uploader("Sube tus archivos de datos", accept_multiple_files=True)
+
+if up_datasets:
+    if st.button("🤖 Generar Descripciones Automáticas para Datasets"):
+        if not st.session_state.contexto:
+            st.warning("⚠️ Escribe primero el contexto abajo para que la IA pueda trabajar.")
+        else:
+            with st.spinner("Analizando datasets..."):
+                for ds in up_datasets:
+                    try:
+                        if ds.name.endswith('.csv'):
+                            preview = pd.read_csv(ds, nrows=3).to_string()
+                        else:
+                            preview = "Archivo de datos (Excel/Binario)"
+                        ds.seek(0)
+                        res_ds = analizar_dataset_con_contexto_previo(ds.name, preview, st.session_state.contexto)
+                        st.session_state.descripciones_datasets[ds.name] = res_ds
+                    except:
+                        st.session_state.descripciones_datasets[ds.name] = "Error leyendo el archivo."
+
+# --- PASO 2: Definir Información de la Investigación ---
+st.divider()
+st.header("2. Definir Información de la Investigación")
 col_f, col_t = st.columns([1, 2])
 
 with col_f:
@@ -211,30 +235,6 @@ with st.expander("🔍 Buscador e Incorporador Manual de Autores vía ORCID"):
                 st.info("Sin resultados exactos. Puedes escribirlo directamente en el campo de texto de arriba.")
 
     buscador_manual_autores()
-
-
-# --- PASO 2: DATASETS ---
-st.divider()
-st.header("2. Cargar y Analizar Datasets")
-up_datasets = st.file_uploader("Sube tus archivos de datos", accept_multiple_files=True)
-
-if up_datasets:
-    if st.button("🤖 Generar Descripciones Automáticas para Datasets"):
-        if not st.session_state.contexto:
-            st.warning("⚠️ Escribe primero el contexto arriba para que la IA pueda trabajar.")
-        else:
-            with st.spinner("Analizando datasets..."):
-                for ds in up_datasets:
-                    try:
-                        if ds.name.endswith('.csv'):
-                            preview = pd.read_csv(ds, nrows=3).to_string()
-                        else:
-                            preview = "Archivo de datos (Excel/Binario)"
-                        ds.seek(0)
-                        res_ds = analizar_dataset_con_contexto_previo(ds.name, preview, st.session_state.contexto)
-                        st.session_state.descripciones_datasets[ds.name] = res_ds
-                    except:
-                        st.session_state.descripciones_datasets[ds.name] = "Error leyendo el archivo."
 
 # --- PASO 3: REVISIÓN Y GUARDADO ---
 if st.session_state.descripciones_datasets:

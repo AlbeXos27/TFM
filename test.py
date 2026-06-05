@@ -101,14 +101,30 @@ for ruta_carpeta in DIRECTORIO_INVESTIGACIONES.iterdir():
             # =========================================================
             print("📁 Vinculando archivos físicos...")
 
-            # 1. Intentar adjuntar el paper.pdf
-            fichero_pdf = ruta_carpeta / "paper.pdf"
-            if fichero_pdf.exists():
-                dataset.add_file(
-                    local_path=str(fichero_pdf),
-                    description="Documento de trabajo original (Working Paper) en formato PDF."
-                )
-                print(f"   ✓ Documento PDF vinculado: {fichero_pdf.name}")
+            # 1. Adjuntar papers listados en los metadatos
+            papers_metadata = meta.get("papers", [])
+            if papers_metadata:
+                for paper_meta in papers_metadata:
+                    paper_nombre = paper_meta.get("archivo")
+                    if not paper_nombre:
+                        continue
+                    fichero_pdf = ruta_carpeta / paper_nombre
+                    if fichero_pdf.exists():
+                        dataset.add_file(
+                            local_path=str(fichero_pdf),
+                            description="Documento de trabajo original en formato PDF."
+                        )
+                        print(f"   ✓ Documento PDF vinculado: {paper_nombre}")
+                    else:
+                        print(f"   ⚠️ Paper '{paper_nombre}' no encontrado en carpeta.")
+            else:
+                fichero_pdf = ruta_carpeta / "paper.pdf"
+                if fichero_pdf.exists():
+                    dataset.add_file(
+                        local_path=str(fichero_pdf),
+                        description="Documento de trabajo original (Working Paper) en formato PDF."
+                    )
+                    print(f"   ✓ Documento PDF vinculado: {fichero_pdf.name}")
 
             # 2. Adjuntar los datasets listados en el JSON
             for ds in meta.get("datasets", []):
