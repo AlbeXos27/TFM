@@ -5,7 +5,10 @@ from groq import Groq
 import json
 from pathlib import Path
 import shutil
+import requests
+import re
 
+# 🔑 Configuración de Credenciales y Modelos
 API_KEY_GROQ = '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'
 MODELO_LLM = "meta-llama/llama-4-scout-17b-16e-instruct"
 client = Groq(api_key=API_KEY_GROQ)
@@ -16,7 +19,8 @@ def analizar_dataset_con_contexto(dataset_nombre, df, contexto):
     muestra_datos = df.head(5).to_string()
     prompt_sistema = (
         "Eres un experto científico de datos. Tu tarea es explicar la utilidad de un dataset "
-        "dentro de un contexto proporcionado por el usuario."
+        "dentro de un contexto proporcionado por el usuario. Asegúrate de respetar y corregir las tildes "
+        "y eñes en los textos si detectas fallos de codificación."
     )
     prompt_usuario = f"""
     Contexto general: {contexto}
@@ -47,75 +51,109 @@ def analizar_dataset_con_contexto(dataset_nombre, df, contexto):
         return f"Error al generar descripción: {e}"
 
 
-# 🛠️ Configuración para que la app ocupe TODO el ancho de la pantalla
+# 📡 Función de Conexión a la API Pública de ORCID v3.0
+def buscar_en_orcid_real(nombre_autor):
+    url = f"https://pub.orcid.org/v3.0/expanded-search/?q=text:{nombre_autor}"
+    headers = {"Accept": "application/json"}
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = 'utf-8'
+        if response.status_code == 200:
+            data = response.json()
+            listado_resultados = ["Selecciona un resultado del listado..."]
+            
+            if isinstance(data, dict):
+                for item in data.get("expanded-result", []):
+                    if isinstance(item, dict):
+                        orcid_id = item.get("orcid-id")
+                        given_names = item.get("given-names", "")
+                        family_names = item.get("family-names", "")
+                        
+                        inst_list = []
+                        if isinstance(item.get("institution-name"), list):
+                            inst_list = [inst.get("institution-name", "") for inst in item.get("institution-name", []) if isinstance(inst, dict) and inst.get("institution-name")]
+                        
+                        inst_str = f" ({', '.join(inst_list)})" if any(inst_list) else ""
+                        listado_resultados.append(f"{orcid_id} - {given_names} {family_names}{inst_str}")
+                
+            if len(listado_resultados) == 1:
+                return ["No se encontraron coincidencias en el registro de ORCID."]
+            return listado_resultados
+        else:
+            return [f"Aviso: Servidor ORCID no disponible (Status {response.status_code})"]
+    except Exception as e:
+        return [f"Aviso: Sin conexión con ORCID ({str(e)})"]
+
+
+# 🛠️ Configuración global de la interfaz
 st.set_page_config(layout="wide")
 
-st.title("Extracción de Contexto y Enlace")
+st.title("Extracción de Contexto y Enlace Académico")
 
-# Inicializar estado de sesión para almacenar análisis, contextos y metadatos
+# Inicialización segura de st.session_state
 if 'analisis_datasets' not in st.session_state:
     st.session_state.analisis_datasets = {}
 if 'contextos_datasets' not in st.session_state:
     st.session_state.contextos_datasets = {}
 if 'metadatos_articulos_editados' not in st.session_state:
     st.session_state.metadatos_articulos_editados = {}
+if 'metadatos_datasets_editados' not in st.session_state:
+    st.session_state.metadatos_datasets_editados = {}
 if 'textos_articulos' not in st.session_state:
     st.session_state.textos_articulos = {}
 
+# =====================================================================
 # --- SECCIÓN 1: DATASETS ---
+# =====================================================================
 st.header("1. Datasets")
 
 archivos_a = st.file_uploader("Sube uno o varios datasets", type=["csv", "xlsx"], key="uploader_a", accept_multiple_files=True)
 
-# Diccionario para almacenar los dataframes cargados de la sección A
 datasets_dict = {}
 
 if archivos_a:
     st.success(f"¡{len(archivos_a)} dataset(s) cargado(s) con éxito!")
     for archivo in archivos_a:
-        # 1. Verificar si es Excel
         if archivo.name.endswith(('.xlsx', '.xls')):
             datasets_dict[archivo.name] = pd.read_excel(archivo)
-        
-        # 2. Si es CSV, probar diferentes codificaciones comunes
         else:
             try:
-                # Intentar primero con la estándar
                 datasets_dict[archivo.name] = pd.read_csv(archivo, encoding='utf-8')
             except UnicodeDecodeError:
                 try:
-                    # Si falla, intentar con la codificación típica de Excel en español
                     datasets_dict[archivo.name] = pd.read_csv(archivo, encoding='latin-1')
                 except Exception as e:
                     st.error(f"No se pudo leer el archivo {archivo.name}: {e}")
 
-    # Generar análisis automático para cada dataset
     for dataset_name, df in datasets_dict.items():
-        # Solo generar si aún no existe el análisis
         if dataset_name not in st.session_state.analisis_datasets:
-            with st.spinner(f"Analizando {dataset_name}..."):
+            with st.spinner(f"Analizando estructura y autores de {dataset_name}..."):
                 columnas_y_tipos = df.dtypes.to_string()
                 muestra_datos = df.head(5).to_string()
                 
                 prompt_sistema = (
-                    "Eres un experto científico de datos. Tu objetivo es explicar la estructura "
-                    "y el propósito de un dataset basándote estrictamente en sus metadatos y una muestra."
+                    "Eres un experto científico de datos e investigador. Tu objetivo es explicar la estructura, "
+                    "el propósito de un dataset y deducir/extraer posibles autores, investigadores o entidades creadoras basándote en sus metadatos o contenido. "
+                    "Asegúrate de escribir correctamente los nombres propios con sus tildes y eñes correspondientes en español."
                 )
                 
+                # 🌟 MEJORA PROMPT: Regla estricta para evitar textos alternativos si no hay autores
                 prompt_usuario = f"""
                 Analiza el archivo '{dataset_name}'.
-                
                 Columnas y tipos de datos:
                 {columnas_y_tipos}
-                
                 Muestra de las primeras 5 filas:
                 {muestra_datos}
                 
-                Genera una respuesta en español estructurada con:
-                1. **Propósito General:** ¿Para qué sirve este archivo y qué mide o registra en general?
-                2. **Explicación de Campos:** Un desglose rápido de qué significa cada columna basándote en su nombre y valores.
-
-                hazlo con el minimo de palabras posible, directo al grano, sin suposiciones ni información adicional que no esté en los datos.
+                Genera una respuesta UNICAMENTE en formato JSON válido con la siguiente estructura.
+                CRÍTICO: Si no hay autores, creadores o instituciones claras, deja la lista de "autores_detectados" completamente vacía: []. No escribas textos explicativos dentro de la lista.
+                
+                {{
+                    "proposito_general": "Breve explicación de para qué sirve este archivo.",
+                    "explicacion_campos": "Desglose rápido de las variables clave.",
+                    "autores_detectados": []
+                }}
                 """
                 try:
                     respuesta = client.chat.completions.create(
@@ -124,18 +162,45 @@ if archivos_a:
                             {"role": "system", "content": prompt_sistema},
                             {"role": "user", "content": prompt_usuario}
                         ],
+                        response_format={"type": "json_object"},
                         temperature=0.2
                     )
-                    st.session_state.analisis_datasets[dataset_name] = respuesta.choices[0].message.content
+                    
+                    res_json = json.loads(respuesta.choices[0].message.content)
+                    
+                    texto_analisis = f"**Propósito General:** {res_json.get('proposito_general')}\n\n**Explicación de Campos:** {res_json.get('explicacion_campos')}"
+                    st.session_state.analisis_datasets[dataset_name] = texto_analisis
+                    
+                    # 🌟 FILTRO PYTHON: Si la IA escribe una frase larga en vez de un nombre, la borramos
+                    autores_raw = res_json.get("autores_detectados", [])
+                    autores_filtrados = [
+                        a for a in autores_raw 
+                        if len(a) < 50 and "no se puede" not in a.lower() and "inferir" not in a.lower() and "desconocido" not in a.lower()
+                    ]
+                    
+                    st.session_state.metadatos_datasets_editados[dataset_name] = {
+                        "titulo": dataset_name,
+                        "autores_detectados": autores_filtrados,
+                        "autores_finales_seleccionados": autores_filtrados,
+                        "orcids_vinculados": {},
+                        "resultados_busqueda_api": {}
+                    }
+                    
                 except Exception as e:
                     st.session_state.analisis_datasets[dataset_name] = f"Error al analizar: {e}"
+                    st.session_state.metadatos_datasets_editados[dataset_name] = {
+                        "titulo": dataset_name,
+                        "autores_detectados": [],
+                        "autores_finales_seleccionados": [],
+                        "orcids_vinculados": {},
+                        "resultados_busqueda_api": {}
+                    }
     
-    # Selector para visualizar análisis individual
     if st.session_state.analisis_datasets:
         st.markdown("---")
-        st.subheader("📋 Ver Análisis Individual de Datasets")
+        st.subheader("📋 Ver y Gestionar Datasets")
         dataset_seleccionado = st.selectbox(
-            "Selecciona un dataset para ver su análisis:",
+            "Selecciona un dataset para ver su análisis y autores:",
             options=list(st.session_state.analisis_datasets.keys()),
             key="select_dataset_analisis"
         )
@@ -144,7 +209,6 @@ if archivos_a:
             st.info("💡 **Análisis de Groq:**")
             st.markdown(st.session_state.analisis_datasets[dataset_seleccionado])
             
-            # Campo de contexto específico para este dataset
             st.markdown("---")
             st.subheader(f"✍️ Contexto Específico para: {dataset_seleccionado}")
             contexto_dataset = st.text_area(
@@ -156,31 +220,111 @@ if archivos_a:
             if contexto_dataset:
                 st.session_state.contextos_datasets[dataset_seleccionado] = contexto_dataset
                 st.success("✅ Contexto guardado para este dataset")
+                
+            # 👥 CONTROL DE AUTORES DEL DATASET
+            st.markdown("#### 👥 Autores / Creadores del Dataset")
+            datos_ds_actuales = st.session_state.metadatos_datasets_editados[dataset_seleccionado]
+            
+            with st.form(key=f"form_autor_manual_ds_{dataset_seleccionado}", clear_on_submit=True):
+                col_input_ds, col_btn_ds = st.columns([4, 1])
+                with col_input_ds:
+                    nuevo_autor_ds = st.text_input(
+                        "➕ ¿Falta algún creador/autor en este Dataset? Escribe su nombre completo:", 
+                        placeholder="Ej. Juan Pérez"
+                    )
+                with col_btn_ds:
+                    st.markdown("<div style='padding-top: 24px;'></div>", unsafe_allow_html=True)
+                    btn_agregar_ds = st.form_submit_button("Añadir autor al Dataset", use_container_width=True)
 
+                if btn_agregar_ds and nuevo_autor_ds.strip():
+                    nombre_limpio_ds = nuevo_autor_ds.strip()
+                    if nombre_limpio_ds not in datos_ds_actuales["autores_finales_seleccionados"]:
+                        datos_ds_actuales["autores_finales_seleccionados"].append(nombre_limpio_ds)
+                    st.rerun()
+            
+            autores_ds_actuales = datos_ds_actuales["autores_finales_seleccionados"]
+            
+            if autores_ds_actuales:
+                cols_etiquetas_ds = st.columns(len(autores_ds_actuales) if len(autores_ds_actuales) > 0 else 1)
+                autor_ds_a_eliminar = None
+                for idx_a, autor_ds in enumerate(autores_ds_actuales):
+                    with cols_etiquetas_ds[idx_a]:
+                        id_orcid_ds = datos_ds_actuales.get("orcids_vinculados", {}).get(autor_ds, "")
+                        label_ds = f"📊 {autor_ds} ({id_orcid_ds})  ❌" if id_orcid_ds else f"📊 {autor_ds}  ❌"
+                        if st.button(label_ds, key=f"del_ds_{dataset_seleccionado}_{autor_ds}_{idx_a}", use_container_width=True):
+                            autor_ds_a_eliminar = autor_ds
+                
+                if autor_ds_a_eliminar:
+                    datos_ds_actuales["autores_finales_seleccionados"].remove(autor_ds_a_eliminar)
+                    if autor_ds_a_eliminar in datos_ds_actuales.get("orcids_vinculados", {}):
+                        del datos_ds_actuales["orcids_vinculados"][autor_ds_a_eliminar]
+                    st.rerun()
+
+                # Gestión ORCID para Datasets
+                st.markdown("##### 🔍 Identificador ORCID para Creadores de Datasets")
+                for autor_ds in autores_ds_actuales:
+                    if autor_ds not in datos_ds_actuales.get("resultados_busqueda_api", {}):
+                        with st.spinner(f"Buscando '{autor_ds}' en ORCID..."):
+                            datos_ds_actuales.setdefault("resultados_busqueda_api", {})[autor_ds] = buscar_en_orcid_real(autor_ds)
+                    
+                    with st.expander(f"Gestionar ORCID para creador: {autor_ds}", expanded=False):
+                        sb_key_ds = f"select_orcid_ds_{dataset_seleccionado}_{autor_ds}"
+                        
+                        def actualizar_orcid_ds(ds_key, aut_key, sb_k):
+                            sel = st.session_state[sb_k]
+                            if sel and "0000-" in sel:
+                                cod = sel.split(" - ")[0].strip()
+                                st.session_state.metadatos_datasets_editados[ds_key]["orcids_vinculados"][aut_key] = cod
+                                st.session_state[f"final_orcid_ds_{ds_key}_{aut_key}"] = cod
+
+                        st.selectbox(
+                            "Coincidencias encontradas:",
+                            options=datos_ds_actuales["resultados_busqueda_api"].get(autor_ds, ["Selecciona..."]),
+                            key=sb_key_ds,
+                            on_change=actualizar_orcid_ds,
+                            args=(dataset_seleccionado, autor_ds, sb_key_ds)
+                        )
+                        
+                        input_key_ds = f"final_orcid_ds_{dataset_seleccionado}_{autor_ds}"
+                        if input_key_ds not in st.session_state:
+                            st.session_state[input_key_ds] = datos_ds_actuales["orcids_vinculados"].get(autor_ds, "")
+                        
+                        orcid_conf = st.text_input("ORCID Creador Definitivo:", key=input_key_ds)
+                        if orcid_conf != datos_ds_actuales["orcids_vinculados"].get(autor_ds, ""):
+                            datos_ds_actuales["orcids_vinculados"][autor_ds] = orcid_conf
+                            st.rerun()
+            else:
+                st.info("No se han detectado autores para este dataset. Puedes añadir uno manualmente arriba.")
 
 st.markdown("---") 
 
-
-# --- SECCIÓN 2: ARTÍCULOS ---
+# =====================================================================
+# --- SECCIÓN 2: ARTÍCULOS Y AUTORES ---
+# =====================================================================
 st.header("2. Artículos")
 
 archivos_b = st.file_uploader("Sube uno o varios artículos (PDF)", type=["pdf"], key="uploader_b", accept_multiple_files=True)
 
-# Diccionarios para almacenar el texto y los metadatos de los artículos
 articulos_dict = {}
-articulos_meta_dict = {}
 
 if archivos_b:
     st.success(f"¡{len(archivos_b)} artículo(s) PDF cargado(s) con éxito!")
     for archivo in archivos_b:
         try:
-            # Guardar los bytes del PDF
             archivo.seek(0)
             pdf_bytes = archivo.read()
-            
             lector_pdf = pypdf.PdfReader(archivo)
             
-            # 1. Extraer texto del PDF (primeras páginas)
+            autores_metadatos = []
+            if lector_pdf.metadata and lector_pdf.metadata.author:
+                autor_raw = lector_pdf.metadata.author.strip()
+                autor_limpio = re.sub(r'\b(and|y|\&)\b', ',', autor_raw, flags=re.IGNORECASE)
+                
+                if ";" in autor_limpio:
+                    autores_metadatos = [a.strip() for a in autor_limpio.split(";") if a.strip()]
+                else:
+                    autores_metadatos = [a.strip() for a in autor_limpio.split(",") if a.strip()]
+
             texto_pdf = ""
             num_paginas_extraer = min(3, len(lector_pdf.pages))
             for i in range(num_paginas_extraer):
@@ -190,459 +334,365 @@ if archivos_b:
                 except:
                     texto_pdf += f"\n[No se pudo extraer texto de la página {i+1}]\n"
             
-            # Almacenar texto y bytes
-            if 'textos_articulos' not in st.session_state:
-                st.session_state.textos_articulos = {}
             st.session_state.textos_articulos[archivo.name] = texto_pdf
-            
-            # 2. Metadatos iniciales (serán sobrescritos por Groq)
-            meta = lector_pdf.metadata
-            articulos_meta_dict[archivo.name] = {
-                "Título del documento": meta.title if meta and meta.title else "No especificado",
-                "Autor": meta.author if meta and meta.author else "No especificado",
-                "Creador/Software": meta.creator if meta and meta.creator else "Desconocido",
-                "Número de Páginas": len(lector_pdf.pages)
-            }
-            
             articulos_dict[archivo.name] = pdf_bytes
+            
+            if archivo.name not in st.session_state.metadatos_articulos_editados:
+                st.session_state.metadatos_articulos_editados[archivo.name] = {
+                    "autores_pdf_metadatos": autores_metadatos,
+                    "autores_detectados": [],  
+                    "autores_finales_seleccionados": [],
+                    "orcids_vinculados": {},
+                    "resultados_busqueda_api": {}
+                }
+            else:
+                st.session_state.metadatos_articulos_editados[archivo.name]["autores_pdf_metadatos"] = autores_metadatos
             
         except Exception as e:
             st.error(f"No se pudo leer el PDF {archivo.name}: {e}")
 
-    # Mostrar vista previa y metadatos editable de Artículos PDF
-    articulo_visualizar = st.selectbox("Editar metadatos del Artículo:", list(articulos_dict.keys()))
+    articulo_visualizar = st.selectbox("Selecciona un Artículo para gestionar sus metadatos y autores:", list(articulos_dict.keys()))
+    
     if articulo_visualizar:
-        # Procesar con Groq si no está hecho
-        if articulo_visualizar not in st.session_state.metadatos_articulos_editados:
+        datos_actuales = st.session_state.metadatos_articulos_editados[articulo_visualizar]
+        
+        if not datos_actuales.get("autores_detectados") and "titulo" not in datos_actuales:
             if articulo_visualizar in st.session_state.textos_articulos:
                 texto_pdf = st.session_state.textos_articulos[articulo_visualizar][:4000]
                 
-                with st.spinner(f"Extrayendo metadatos de {articulo_visualizar} con IA..."):
-                    prompt = f"""
-                    Analiza este fragmento de un documento académico y extrae:
-                    1. Título completo del documento
-                    2. Lista de todos los autores en formato [autor1,autor2,autor3]
+                with st.spinner(f"Extrayendo autores y contexto de {articulo_visualizar} con IA..."):
+                    # 🌟 MEJORA PROMPT ARTÍCULOS: Regla estricta para evitar frases explicativas
+                    prompt_metadatos = f"""
+                    Analiza este fragmento de un documento académico y extrae la información.
+                    Necesito el título del artículo, una lista de los nombres de los autores, y un resumen único del contexto.
+                    Corrija activamente cualquier fallo de caracteres o tildes rotas que provengan de la extracción del documento.
                     
-                    Si no encuentras información clara, deduce lo que puedas del contexto.
+                    CRÍTICO: Si no consigues identificar autores, deja el arreglo "autores_detectados" completamente vacío: []. No metas frases descriptivas adentro.
                     
-                    Responde SOLO en formato JSON sin explicaciones adicionales:
+                    Responde ÚNICAMENTE con un objeto JSON estructurado con este formato exacto:
                     {{
-                        "titulo": "Título completo del documento",
-                        "autores": "Nombre Apellido,Nombre Apellido,Nombre Apellido"
+                        "titulo": "Título completo del documento con tildes correctas",
+                        "autores_detectados": [],
+                        "contexto_unico": "Resumen del marco académico de este paper."
                     }}
                     
                     Texto:
                     {texto_pdf}
                     """
-                    
                     try:
                         respuesta = client.chat.completions.create(
                             model=MODELO_LLM,
-                            messages=[{"role": "user", "content": prompt}],
+                            messages=[{"role": "user", "content": prompt_metadatos}],
                             response_format={"type": "json_object"},
                             temperature=0.2
                         )
                         
-                        resultado = json.loads(respuesta.choices[0].message.content)
-                        metadatos_nuevos = {
-                            "Título del documento": resultado.get("titulo", ""),
-                            "Autor": resultado.get("autores", "")
-                        }
-                        st.session_state.metadatos_articulos_editados[articulo_visualizar] = metadatos_nuevos
+                        try:
+                            resultado = json.loads(respuesta.choices[0].message.content)
+                            if not isinstance(resultado, dict):
+                                resultado = {}
+                        except:
+                            resultado = {}
                         
-                        # Detectar cambios significativos
-                        metadatos_originales = articulos_meta_dict[articulo_visualizar]
-                        titulo_original = metadatos_originales.get("Título del documento", "No especificado")
-                        titulo_nuevo = metadatos_nuevos.get("Título del documento", "")
-                        autor_original = metadatos_originales.get("Autor", "No especificado")
-                        autor_nuevo = metadatos_nuevos.get("Autor", "")
+                        datos_actuales["titulo"] = resultado.get("titulo", articulo_visualizar)
+                        datos_actuales["contexto_unico"] = resultado.get("contexto_unico", "No se pudo generar el contexto automáticamente.")
                         
-                        # Comparar cambios
-                        cambio_titulo = titulo_original != titulo_nuevo and titulo_original != "No especificado"
-                        cambio_autor = autor_original != autor_nuevo and autor_original != "No especificado"
+                        # 🌟 FILTRO PYTHON ARTÍCULOS
+                        autores_art_raw = resultado.get("autores_detectados", [])
+                        autores_art_filtrados = [
+                            a for a in autores_art_raw 
+                            if len(a) < 50 and "no se puede" not in a.lower() and "inferir" not in a.lower() and "desconocido" not in a.lower()
+                        ]
                         
-                        if cambio_titulo or cambio_autor:
-                            st.warning("⚠️ **CAMBIOS DETECTADOS EN METADATOS**")
-                            with st.expander("🔍 Ver cambios detectados", expanded=True):
-                                if cambio_titulo:
-                                    st.markdown("**Título:**")
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.write(f"**Original:** {titulo_original}")
-                                    with col2:
-                                        st.write(f"**Nuevo:** {titulo_nuevo}")
-                                
-                                if cambio_autor:
-                                    st.markdown("**Autores:**")
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.write(f"**Original:** {autor_original}")
-                                    with col2:
-                                        st.write(f"**Nuevo:** {autor_nuevo}")
-                        else:
-                            st.success("✅ Metadatos extraídos correctamente con IA")
+                        datos_actuales["autores_detectados"] = autores_art_filtrados
+                        
+                        lista_inicial = list(set(datos_actuales["autores_pdf_metadatos"] + datos_actuales["autores_detectados"]))
+                        datos_actuales["autores_finales_seleccionados"] = [a for a in lista_inicial if a]
+                        
+                        st.success("✅ Autores y contexto inicializados con IA")
                     except Exception as e:
-                        st.session_state.metadatos_articulos_editados[articulo_visualizar] = {
-                            "Título del documento": articulos_meta_dict[articulo_visualizar].get("Título del documento", ""),
-                            "Autor": articulos_meta_dict[articulo_visualizar].get("Autor", "")
-                        }
+                        datos_actuales["titulo"] = articulo_visualizar
+                        datos_actuales["contexto_unico"] = "No se pudo generar el contexto automáticamente."
+                        datos_actuales["autores_detectados"] = []
+                        datos_actuales["autores_finales_seleccionados"] = datos_actuales["autores_pdf_metadatos"].copy()
                         st.error(f"Error al procesar con IA: {e}")
-            else:
-                st.session_state.metadatos_articulos_editados[articulo_visualizar] = {
-                    "Título del documento": articulos_meta_dict[articulo_visualizar].get("Título del documento", ""),
-                    "Autor": articulos_meta_dict[articulo_visualizar].get("Autor", "")
-                }
-        
-        # Sección de edición de metadatos
+
         st.markdown("---")
-        with st.expander("✏️ Editar Metadatos del Artículo", expanded=True):
-            titulo_editado = st.text_input(
-                "Título del documento:",
-                value=st.session_state.metadatos_articulos_editados[articulo_visualizar].get("Título del documento", ""),
-                key=f"titulo_{articulo_visualizar}"
-            )
-            st.session_state.metadatos_articulos_editados[articulo_visualizar]["Título del documento"] = titulo_editado
+        
+        st.subheader("📄 Información General del Artículo")
+        titulo_editado = st.text_input("Título del documento:", value=datos_actuales.get("titulo", ""), key=f"tit_{articulo_visualizar}")
+        datos_actuales["titulo"] = titulo_editado
+        
+        contexto_editado = st.text_area("Contexto único de este artículo:", value=datos_actuales.get("contexto_unico", ""), height=100, key=f"ctx_{articulo_visualizar}")
+        datos_actuales["contexto_unico"] = contexto_editado
+        
+        st.subheader("👥 Comparativa y Control de Autores")
+        col_meta, col_ia = st.columns(2)
+        with col_meta:
+            st.markdown("**📂 Encontrados en Metadatos del PDF (Limpios):**")
+            autores_pdf = datos_actuales.get("autores_pdf_metadatos", [])
+            if autores_pdf:
+                for a in autores_pdf:
+                    st.markdown(f"- `{a}`")
+            else:
+                st.caption("Ninguno registrado en las propiedades del archivo.")
+                
+        with col_ia:
+            st.markdown("**🤖 Extraídos por Inteligencia Artificial:**")
+            autores_ia = datos_actuales.get("autores_detectados", [])
+            if autores_ia:
+                for a in autores_ia:
+                    st.markdown(f"- `{a}`")
+            else:
+                st.caption("La IA no logró identificar nombres de autores.")
+
+        st.markdown("#### 👥 Autores Definitivos Configurados")
+        
+        if "autores_finales_seleccionados" not in datos_actuales or not datos_actuales["autores_finales_seleccionados"]:
+            lista_unificada = list(set(autores_pdf + autores_ia))
+            datos_actuales["autores_finales_seleccionados"] = [a for a in lista_unificada if a]
+
+        with st.form(key=f"form_autor_manual_{articulo_visualizar}", clear_on_submit=True):
+            col_input, col_btn = st.columns([4, 1])
+            with col_input:
+                nuevo_autor_manual = st.text_input(
+                    "➕ ¿Falta algún autor? Escribe su nombre completo aquí y pulsa Añadir:", 
+                    placeholder="Ej. Juan Pérez"
+                )
+            with col_btn:
+                st.markdown("<div style='padding-top: 24px;'></div>", unsafe_allow_html=True)
+                btn_agregar = st.form_submit_button("Añadir autor", use_container_width=True)
+
+            if btn_agregar and nuevo_autor_manual.strip():
+                nombre_limpio = nuevo_autor_manual.strip()
+                if nombre_limpio not in datos_actuales["autores_finales_seleccionados"]:
+                    datos_actuales["autores_finales_seleccionados"].append(nombre_limpio)
+                st.rerun()
+
+        autores_actuales = datos_actuales["autores_finales_seleccionados"]
+        
+        if autores_actuales:
+            st.caption("Haz clic en la ❌ de cualquier autor para removerlo del artículo:")
+            cols_etiquetas = st.columns(len(autores_actuales) if len(autores_actuales) > 0 else 1)
             
-            autor_editado = st.text_input(
-                "Autores (formato: [autor1,autor2,autor3]):",
-                value=st.session_state.metadatos_articulos_editados[articulo_visualizar].get("Autor", ""),
-                key=f"autor_{articulo_visualizar}"
-            )
-            st.session_state.metadatos_articulos_editados[articulo_visualizar]["Autor"] = autor_editado
+            autor_a_eliminar = None
+            for idx_a, autor in enumerate(autores_actuales):
+                with cols_etiquetas[idx_a]:
+                    id_orcid_guardado = datos_actuales.get("orcids_vinculados", {}).get(autor, "")
+                    label_visual = f"👤 {autor} ({id_orcid_guardado})  ❌" if id_orcid_guardado else f"👤 {autor}  ❌"
+                    
+                    if st.button(label_visual, key=f"del_{articulo_visualizar}_{autor}_{idx_a}", use_container_width=True):
+                        autor_a_eliminar = autor
             
-            st.success("✅ Los cambios se guardan automáticamente")
+            if autor_a_eliminar:
+                datos_actuales["autores_finales_seleccionados"].remove(autor_a_eliminar)
+                if autor_a_eliminar in datos_actuales.get("orcids_vinculados", {}):
+                    del datos_actuales["orcids_vinculados"][autor_a_eliminar]
+                st.rerun()
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            st.markdown("#### 🔍 Identificador de ORCID por Investigador (Búsqueda Automática)")
+            for autor in autores_actuales:
+                if autor not in datos_actuales.get("resultados_busqueda_api", {}):
+                    datos_actuales.setdefault("resultados_busqueda_api", {})[autor] = buscar_en_orcid_real(autor)
+                
+                with st.expander(f"Gestionar ORCID para: {autor}", expanded=False):
+                    nombre_a_buscar = st.text_input(
+                        f"Refinar texto de búsqueda si es necesario:",
+                        value=autor,
+                        key=f"search_name_{articulo_visualizar}_{autor}"
+                    )
+                    
+                    btn_buscar = st.button("🔄 Volver a buscar con el nuevo texto", key=f"btn_search_{articulo_visualizar}_{autor}")
+                    
+                    if btn_buscar and nombre_a_buscar:
+                        with st.spinner(f"Re-buscando '{nombre_a_buscar}'..."):
+                            datos_actuales["resultados_busqueda_api"][autor] = buscar_en_orcid_real(nombre_a_buscar)
+                            st.rerun()
+                    
+                    options_actuales = datos_actuales["resultados_busqueda_api"].get(autor, ["Selecciona un resultado del listado..."])
+                    
+                    def actualizar_orcid_seleccionado(art_key, autor_key, sb_key):
+                        seleccion = st.session_state[sb_key]
+                        if seleccion and "0000-" in seleccion:
+                            codigo_extraido = seleccion.split(" - ")[0].strip()
+                            st.session_state.metadatos_articulos_editados[art_key]["orcids_vinculados"][autor_key] = codigo_extraido
+                            st.session_state[f"final_orcid_{art_key}_{autor_key}"] = codigo_extraido
+
+                    sb_key = f"select_orcid_list_{articulo_visualizar}_{autor}"
+                    
+                    st.selectbox(
+                        "Coincidencias encontradas en ORCID:",
+                        options=options_actuales,
+                        key=sb_key,
+                        on_change=actualizar_orcid_seleccionado,
+                        args=(articulo_visualizar, autor, sb_key)
+                    )
+                    
+                    valor_actual_orcid = datos_actuales["orcids_vinculados"].get(autor, "")
+                    input_key = f"final_orcid_{articulo_visualizar}_{autor}"
+                    
+                    if input_key not in st.session_state:
+                        st.session_state[input_key] = valor_actual_orcid
+                    
+                    orcid_confirmado = st.text_input("ORCID Definitivo:", key=input_key)
+                    
+                    if orcid_confirmado != valor_actual_orcid:
+                        datos_actuales["orcids_vinculados"][autor] = orcid_confirmado
+                        st.rerun()
+        else:
+            st.info("No se han detectado autores para este artículo. Puedes añadir uno manualmente arriba.")
 
 st.markdown("---")
-contexto_manual = st.text_area(
-    "Contexto general para los datasets (útil si no tienes documento asociado):",
-    height=150
-)
 
-st.markdown("---")
-
+# =====================================================================
 # --- SECCIÓN 3: GUARDAR COMBINACIONES ---
+# =====================================================================
 if datasets_dict or st.session_state.analisis_datasets:
     st.header("💾 3. Guardar Combinaciones Resultantes")
     
-    # Resumen de lo que se va a guardar
-    st.subheader("📝 Resumen de lo que se guardará:")
-    resumen = f"""
-    - **Datasets:** {len(datasets_dict)} archivo(s)
-    - **Análisis generados:** {len(st.session_state.analisis_datasets)} análisis
-    - **Contextos específicos:** {len([c for c in st.session_state.contextos_datasets.values() if c])} contextos definidos
-    - **Documentos PDF:** {len(articulos_dict)} PDF(s)
-    """
-    st.info(resumen)
-    
-    # Inicializar lista de carpetas destino
     if 'carpetas_destino' not in st.session_state:
         st.session_state.carpetas_destino = []
     
-    # Selector para número de carpetas
-    num_carpetas = st.number_input(
-        "¿Cuántas carpetas deseas crear?",
-        min_value=1,
-        max_value=10,
-        value=1,
-        step=1
-    )
+    num_carpetas = st.number_input("¿Cuántas carpetas deseas crear?", min_value=1, max_value=10, value=1, step=1)
     
-    # Ajustar lista de carpetas según número seleccionado
     if len(st.session_state.carpetas_destino) < num_carpetas:
-        st.session_state.carpetas_destino.extend([{"nombre": "", "ruta": "", "contextos_editable": {}} for _ in range(num_carpetas - len(st.session_state.carpetas_destino))])
+        st.session_state.carpetas_destino.extend([{"nombre": "", "ruta": "", "relaciones_cruzadas": {}} for _ in range(num_carpetas - len(st.session_state.carpetas_destino))])
     elif len(st.session_state.carpetas_destino) > num_carpetas:
         st.session_state.carpetas_destino = st.session_state.carpetas_destino[:num_carpetas]
     
-    # Formulario dinámico para cada carpeta
-    st.subheader("📁 Configurar Carpetas de Destino")
     for idx in range(num_carpetas):
-        with st.expander(f"Carpeta {idx + 1}", expanded=(idx == 0)):
+        with st.expander(f"📁 Configurar Carpeta {idx + 1}", expanded=True):
             col1, col2 = st.columns(2)
-            
             with col1:
-                nombre = st.text_input(
-                    f"Nombre carpeta {idx + 1}:",
-                    value=st.session_state.carpetas_destino[idx]["nombre"],
-                    placeholder="proyecto_investigacion",
-                    key=f"nombre_carpeta_{idx}"
-                )
+                nombre = st.text_input(f"Nombre carpeta {idx + 1}:", value=st.session_state.carpetas_destino[idx]["nombre"], key=f"n_carp_{idx}")
                 st.session_state.carpetas_destino[idx]["nombre"] = nombre
-            
             with col2:
-                ruta = st.text_input(
-                    f"Ruta base {idx + 1} (dejar en blanco para escritorio):",
-                    value=st.session_state.carpetas_destino[idx]["ruta"],
-                    placeholder="C:\\Users\\tu_usuario\\Documentos",
-                    key=f"ruta_carpeta_{idx}"
-                )
+                ruta = st.text_input(f"Ruta base {idx + 1} (Vacío para Escritorio):", value=st.session_state.carpetas_destino[idx]["ruta"], key=f"r_carp_{idx}")
                 st.session_state.carpetas_destino[idx]["ruta"] = ruta
             
-            # Selector de archivos a guardar
-            st.markdown(f"**Archivos a guardar en Carpeta {idx + 1}:**")
+            datasets_seleccionados = st.multiselect(f"Datasets para Carpeta {idx + 1}:", options=list(datasets_dict.keys()), default=list(datasets_dict.keys()), key=f"sel_d_{idx}")
+            pdfs_seleccionados = st.multiselect(f"Artículos para Carpeta {idx + 1}:", options=list(articulos_dict.keys()), default=list(articulos_dict.keys()), key=f"sel_p_{idx}")
             
-            col_a, col_b, col_c = st.columns(3)
-            
-            with col_a:
-                guardar_datasets = st.checkbox(
-                    "📊 Datasets",
-                    value=st.session_state.carpetas_destino[idx].get("guardar_datasets", True),
-                    key=f"check_datasets_{idx}"
-                )
-                st.session_state.carpetas_destino[idx]["guardar_datasets"] = guardar_datasets
-            
-            with col_b:
-                guardar_pdfs = st.checkbox(
-                    "📄 Artículos PDF",
-                    value=st.session_state.carpetas_destino[idx].get("guardar_pdfs", True),
-                    key=f"check_pdfs_{idx}"
-                )
-                st.session_state.carpetas_destino[idx]["guardar_pdfs"] = guardar_pdfs
-            
-            with col_c:
-                guardar_metadatos = st.checkbox(
-                    "📋 Metadatos",
-                    value=st.session_state.carpetas_destino[idx].get("guardar_metadatos", True),
-                    key=f"check_metadatos_{idx}"
-                )
-                st.session_state.carpetas_destino[idx]["guardar_metadatos"] = guardar_metadatos
-            
-            # Selector de datasets específicos (si hay)
-            if datasets_dict and guardar_datasets:
-                # Inicializar contextos_editable si no existe
-                if "contextos_editable" not in st.session_state.carpetas_destino[idx]:
-                    st.session_state.carpetas_destino[idx]["contextos_editable"] = {}
-                
-                st.markdown("Selecciona qué datasets guardar:")
-                datasets_seleccionados = st.multiselect(
-                    f"Datasets para Carpeta {idx + 1}:",
-                    options=list(datasets_dict.keys()),
-                    default=list(datasets_dict.keys()),
-                    key=f"select_datasets_{idx}"
-                )
-                st.session_state.carpetas_destino[idx]["datasets_seleccionados"] = datasets_seleccionados
-                
-                # Generar contextos automáticos al seleccionar datasets
-                pdfs_a_guardar = st.session_state.carpetas_destino[idx].get("pdfs_seleccionados", list(articulos_dict.keys()))
-                
-                for dataset_name in datasets_seleccionados:
-                    if dataset_name not in st.session_state.carpetas_destino[idx]["contextos_editable"]:
-                        resumen_auto = ""
-                        relacion_auto = ""
+            st.session_state.carpetas_destino[idx]["datasets_seleccionados"] = datasets_seleccionados
+            st.session_state.carpetas_destino[idx]["pdfs_seleccionados"] = pdfs_seleccionados
+
+            if datasets_seleccionados and pdfs_seleccionados:
+                if st.button(f"🤖 Generar Relaciones Cruzadas con IA (Carpeta {idx + 1})", key=f"btn_ia_{idx}"):
+                    st.session_state.carpetas_destino[idx].setdefault("relaciones_cruzadas", {})
+                    
+                    for p_name in pdfs_seleccionados:
+                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"].setdefault(p_name, {})
+                        contexto_art = st.session_state.metadatos_articulos_editados.get(p_name, {}).get("contexto_unico", "")
                         
-                        if pdfs_a_guardar:
-                            resumenes_papers = []
-                            for pdf_name in pdfs_a_guardar:
-                                if pdf_name in st.session_state.textos_articulos:
-                                    texto_pdf = st.session_state.textos_articulos[pdf_name]
-                                    try:
-                                        prompt_resumen = f"""
-                                        Lee este paper académico completo y genera un resumen muy breve (2-3 líneas máximo) 
-                                        sobre el tema principal y propósito del paper.
-                                        
-                                        IMPORTANTE: Responde con este formato exacto:
-                                        resumen: [aquí va el contenido del resumen del paper]
-                                        relacion con el dataset: [aquí va la relación del dataset con el paper]
-                                        
-                                        Texto:
-                                        {texto_pdf}
-                                        """
-                                        respuesta_resumen = client.chat.completions.create(
-                                            model=MODELO_LLM,
-                                            messages=[{"role": "user", "content": prompt_resumen}],
-                                            temperature=0.3
-                                        )
-                                        respuesta = respuesta_resumen.choices[0].message.content.strip()
-                                        resumenes_papers.append(respuesta)
-                                    except:
-                                        pass
-                            
-                            if resumenes_papers:
-                                resumen_auto = "\n\n".join(resumenes_papers)
-                        
-                        st.session_state.carpetas_destino[idx]["contextos_editable"][dataset_name] = {
-                            "resumen": resumen_auto,
-                            "relacion_dataset": relacion_auto
-                        }
-            
-            # Selector de PDFs específicos (si hay)
-            if articulos_dict and guardar_pdfs:
-                st.markdown("Selecciona qué artículos guardar:")
-                pdfs_seleccionados = st.multiselect(
-                    f"Artículos para Carpeta {idx + 1}:",
-                    options=list(articulos_dict.keys()),
-                    default=list(articulos_dict.keys()),
-                    key=f"select_pdfs_{idx}"
-                )
-                st.session_state.carpetas_destino[idx]["pdfs_seleccionados"] = pdfs_seleccionados
-            
-            # Editar contextos de datasets
-            if datasets_dict and guardar_datasets:
-                st.markdown("---")
-                st.markdown(f"**📝 Editar Contextos por Dataset:**")
-                
-                datasets_a_guardar = st.session_state.carpetas_destino[idx].get("datasets_seleccionados", [])
-                
-                if datasets_a_guardar:
-                    for dataset_name in datasets_a_guardar:
-                        with st.expander(f"📊 {dataset_name}", expanded=False):
-                            resumen = st.text_area(
-                                "Resumen:",
-                                value=st.session_state.carpetas_destino[idx]["contextos_editable"][dataset_name].get("resumen", ""),
-                                height=60,
-                                key=f"resumen_{idx}_{dataset_name}"
-                            )
-                            st.session_state.carpetas_destino[idx]["contextos_editable"][dataset_name]["resumen"] = resumen
-                            
-                            relacion = st.text_area(
-                                "Relación con el dataset:",
-                                value=st.session_state.carpetas_destino[idx]["contextos_editable"][dataset_name].get("relacion_dataset", ""),
-                                height=60,
-                                key=f"relacion_{idx}_{dataset_name}"
-                            )
-                            st.session_state.carpetas_destino[idx]["contextos_editable"][dataset_name]["relacion_dataset"] = relacion
-                else:
-                    st.info("ℹ️ Selecciona datasets arriba para editar contextos")
-    
-    if st.button("💾 Guardar en Todas las Carpetas", type="primary"):
-        carpetas_guardadas = []
-        errores = []
-        
+                        for d_name in datasets_seleccionados:
+                            df = datasets_dict[d_name]
+                            with st.spinner(f"Vinculando `{d_name}` con el artículo `{p_name}`..."):
+                                prompt_relacion = f"""
+                                Teniendo en cuenta el contexto único de este artículo académico: "{contexto_art}"
+                                Y evaluando este dataset '{d_name}' con las columnas: {df.columns.tolist()}
+                                Escribe una explicación clara en español (máximo 4 líneas) sobre cómo se relaciona este dataset.
+                                Asegúrate de incluir tildes correctas.
+                                """
+                                try:
+                                    res_ia = client.chat.completions.create(
+                                        model=MODELO_LLM,
+                                        messages=[{"role": "user", "content": prompt_relacion}],
+                                        temperature=0.3
+                                    )
+                                    st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = res_ia.choices[0].message.content.strip()
+                                except Exception as e:
+                                    st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = f"Error: {e}"
+
+            if "relaciones_cruzadas" in st.session_state.carpetas_destino[idx] and pdfs_seleccionados:
+                st.markdown("### 📝 Relaciones del Dataset con el Contexto de cada Artículo:")
+                for p_name in pdfs_seleccionados:
+                    if p_name in st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]:
+                        st.markdown(f"##### 📄 Artículo: `{p_name}`")
+                        for d_name in datasets_seleccionados:
+                            relacion_actual = st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name].get(d_name, "")
+                            rel_editada = st.text_area(f"Relación de `{d_name}` con este paper:", value=relacion_actual, height=80, key=f"area_{idx}_{p_name}_{d_name}")
+                            st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = rel_editada
+
+    if st.button("💾 Guardar Estructura Completa en Carpetas Físicas", type="primary", use_container_width=True):
         for idx, config_carpeta in enumerate(st.session_state.carpetas_destino):
-            try:
-                nombre_carpeta = config_carpeta["nombre"] or f"proyecto_{idx + 1}"
-                ruta_base = config_carpeta["ruta"]
+            nombre_carpeta = config_carpeta["nombre"] or f"proyecto_{idx + 1}"
+            ruta_base = config_carpeta["ruta"]
+            ruta_final = Path(ruta_base) / nombre_carpeta if ruta_base else Path.home() / "Desktop" / nombre_carpeta
+            ruta_final.mkdir(parents=True, exist_ok=True)
+            
+            (ruta_final / "datasets").mkdir(exist_ok=True)
+            (ruta_final / "articulos").mkdir(exist_ok=True)
+            
+            for d_name in config_carpeta.get("datasets_seleccionados", []):
+                if d_name in datasets_dict:
+                    df = datasets_dict[d_name]
+                    df.to_csv(ruta_final / "datasets" / d_name, index=False) if d_name.endswith('.csv') else df.to_excel(ruta_final / "datasets" / d_name, index=False)
+            
+            for p_name in config_carpeta.get("pdfs_seleccionados", []):
+                if p_name in articulos_dict:
+                    with open(ruta_final / "articulos" / p_name, 'wb') as f:
+                        f.write(articulos_dict[p_name])
+            
+            json_salida = {
+                "fecha_subida": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "articulos": [],
+                "datasets_globales": []
+            }
+            
+            # 1. Guardar autores y datos de los Datasets dentro de la estructura general
+            for d_name in config_carpeta.get("datasets_seleccionados", []):
+                meta_ds = st.session_state.metadatos_datasets_editados.get(d_name, {})
+                lista_autores_ds = meta_ds.get("autores_finales_seleccionados", [])
                 
-                # Determinar ruta final
-                if ruta_base:
-                    ruta_final = Path(ruta_base) / nombre_carpeta
+                if not lista_autores_ds:
+                    autores_ds_json = ""
                 else:
-                    escritorio = Path.home() / "Desktop"
-                    ruta_final = escritorio / nombre_carpeta
+                    autores_ds_json = [{
+                        "nombre": a_nom,
+                        "orcid": meta_ds.get("orcids_vinculados", {}).get(a_nom, "")
+                    } for a_nom in lista_autores_ds]
                 
-                # Crear carpeta
-                ruta_final.mkdir(parents=True, exist_ok=True)
+                json_salida["datasets_globales"].append({
+                    "archivo": d_name,
+                    "autores": autores_ds_json,
+                    "contexto_asociado": st.session_state.contextos_datasets.get(d_name, ""),
+                    "analisis_estructural": st.session_state.analisis_datasets.get(d_name, "")
+                })
+            
+            # 2. Guardar artículos con sus autores y relaciones
+            for p_name in config_carpeta.get("pdfs_seleccionados", []):
+                meta_art = st.session_state.metadatos_articulos_editados.get(p_name, {})
+                lista_autores_art = meta_art.get("autores_finales_seleccionados", [])
                 
-                # 1. Guardar datasets seleccionados
-                if config_carpeta.get("guardar_datasets", True):
-                    carpeta_datasets = ruta_final / "datasets"
-                    carpeta_datasets.mkdir(exist_ok=True)
-                    
-                    datasets_a_guardar = config_carpeta.get("datasets_seleccionados", list(datasets_dict.keys()))
-                    for dataset_name in datasets_a_guardar:
-                        if dataset_name in datasets_dict:
-                            df = datasets_dict[dataset_name]
-                            ruta_dataset = carpeta_datasets / dataset_name
-                            if dataset_name.endswith('.csv'):
-                                df.to_csv(ruta_dataset, index=False)
-                            else:
-                                df.to_excel(ruta_dataset, index=False)
+                if not lista_autores_art:
+                    autores_art_json = ""
+                else:
+                    autores_art_json = [{
+                        "nombre": autor_nom,
+                        "orcid": meta_art.get("orcids_vinculados", {}).get(autor_nom, "")
+                    } for autor_nom in lista_autores_art]
                 
-                # 2. Guardar PDFs seleccionados
-                if config_carpeta.get("guardar_pdfs", True) and articulos_dict:
-                    carpeta_pdfs = ruta_final / "articulos"
-                    carpeta_pdfs.mkdir(exist_ok=True)
-                    
-                    pdfs_a_guardar = config_carpeta.get("pdfs_seleccionados", list(articulos_dict.keys()))
-                    for pdf_name in pdfs_a_guardar:
-                        if pdf_name in articulos_dict and articulos_dict[pdf_name]:
-                            ruta_pdf = carpeta_pdfs / pdf_name
-                            with open(ruta_pdf, 'wb') as f:
-                                f.write(articulos_dict[pdf_name])
+                estructura_articulo = {
+                    "titulo": meta_art.get("titulo", p_name),
+                    "autores": autores_art_json,
+                    "contexto_unico": meta_art.get("contexto_unico", ""),
+                    "relaciones_datasets": []
+                }
                 
-                # 3. Guardar metadatos
-                if config_carpeta.get("guardar_metadatos", True):
-                    metadatos = {
-                        "datasets": {},
-                        "articulos": {},
-                        "contexto_general": contexto_manual if 'contexto_manual' in locals() else "",
-                        "fecha_creacion": str(pd.Timestamp.now())
-                    }
-                    
-                    # Agregar análisis y contextos específicos solo de datasets guardados
-                    datasets_a_guardar = config_carpeta.get("datasets_seleccionados", list(datasets_dict.keys()))
-                    pdfs_a_guardar = config_carpeta.get("pdfs_seleccionados", list(articulos_dict.keys()))
-                    
-                    for dataset_name in datasets_a_guardar:
-                        if dataset_name in datasets_dict:
-                            # Verificar si hay contexto editado en la carpeta
-                            contextos_editable = config_carpeta.get("contextos_editable", {})
-                            
-                            if dataset_name in contextos_editable:
-                                resumen_edit = contextos_editable[dataset_name].get("resumen", "").strip()
-                                relacion_edit = contextos_editable[dataset_name].get("relacion_dataset", "").strip()
-                                
-                                if resumen_edit or relacion_edit:
-                                    contexto_final = f"resumen: {resumen_edit}\nrelacion con el dataset: {relacion_edit}" if resumen_edit and relacion_edit else (resumen_edit or relacion_edit)
-                                else:
-                                    # Si no hay contexto editado, usar específico > general > generar automático
-                                    contexto_especifico = st.session_state.contextos_datasets.get(dataset_name, "")
-                                    contexto_final = contexto_especifico if contexto_especifico else contexto_manual
-                            else:
-                                # Usar específico > general
-                                contexto_especifico = st.session_state.contextos_datasets.get(dataset_name, "")
-                                contexto_final = contexto_especifico if contexto_especifico else contexto_manual
-                            
-                            # Si no hay contexto en ningún lugar, generar uno basado en resúmenes de papers
-                            if not contexto_final and pdfs_a_guardar:
-                                resumenes_papers = []
-                                for pdf_name in pdfs_a_guardar:
-                                    if pdf_name in st.session_state.textos_articulos:
-                                        texto_pdf = st.session_state.textos_articulos[pdf_name]
-                                        try:
-                                            prompt_resumen = f"""
-                                            Lee este paper académico completo y genera un resumen muy breve (2-3 líneas máximo) 
-                                            sobre el tema principal y propósito del paper.
-                                            
-                                            IMPORTANTE: Responde con este formato exacto:
-                                            resumen: [aquí va el contenido del resumen del paper]
-                                            relacion con el dataset: [aquí va la relación del dataset con el paper]
-                                            
-                                            Texto:
-                                            {texto_pdf}
-                                            """
-                                            respuesta_resumen = client.chat.completions.create(
-                                                model=MODELO_LLM,
-                                                messages=[{"role": "user", "content": prompt_resumen}],
-                                                temperature=0.3
-                                            )
-                                            resumen = respuesta_resumen.choices[0].message.content.strip()
-                                            if resumen:
-                                                resumenes_papers.append(resumen)
-                                        except:
-                                            pass
-                                
-                                if resumenes_papers:
-                                    contexto_final = "\n\n".join(resumenes_papers)
-                            
-                            metadatos["datasets"][dataset_name] = {
-                                "analisis": st.session_state.analisis_datasets.get(dataset_name, ""),
-                                "contexto": contexto_final,
-                                "articulos_asociados": pdfs_a_guardar
-                            }
-                    
-                    # Agregar metadatos editados de artículos
-                    for pdf_name in pdfs_a_guardar:
-                        if pdf_name in articulos_dict:
-                            metadatos["articulos"][pdf_name] = st.session_state.metadatos_articulos_editados.get(pdf_name, articulos_meta_dict.get(pdf_name, {}))
-                    
-                    # Guardar metadatos
-                    ruta_metadatos = ruta_final / "metadatos.json"
-                    with open(ruta_metadatos, 'w', encoding='utf-8') as f:
-                        json.dump(metadatos, f, indent=2, ensure_ascii=False)
+                for d_name in config_carpeta.get("datasets_seleccionados", []):
+                    relacion_explicacion = config_carpeta.get("relaciones_cruzadas", {}).get(p_name, {}).get(d_name, "Sin relación generada.")
+                    estructura_articulo["relaciones_datasets"].append({
+                        "archivo_dataset": d_name,
+                        "relacion_con_contexto": relacion_explicacion
+                    })
                 
-                carpetas_guardadas.append(str(ruta_final))
+                json_salida["articulos"].append(estructura_articulo)
+            
+            # Guardado definitivo con tildes forzadas en UTF-8
+            json_string = json.dumps(json_salida, indent=4, ensure_ascii=False)
+            (ruta_final / "metadatos.json").write_text(json_string, encoding='utf-8')
                 
-            except Exception as e:
-                errores.append(f"Carpeta {idx + 1}: {e}")
-        
-        # Mostrar resultados
-        if carpetas_guardadas:
-            st.success(f"✅ Se guardaron {len(carpetas_guardadas)} carpeta(s):")
-            for ruta in carpetas_guardadas:
-                st.write(f"📁 {ruta}")
-            st.balloons()
-        
-        if errores:
-            st.error("❌ Errores:")
-            for error in errores:
-                st.write(error)
+        st.success("🎉 ¡Estructura y metadatos JSON unificados guardados con éxito en disco!")
+        st.balloons()
