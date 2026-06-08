@@ -18,13 +18,9 @@ def analizar_dataset_con_contexto(dataset_nombre, df, contexto):
     columnas_y_tipos = df.dtypes.to_string()
     muestra_datos = df.head(5).to_string()
     prompt_sistema = (
-        "Eres un experto científico de datos. Tu tarea es explicar la utilidad de un dataset "
-        "dentro de un contexto proporcionado por el usuario. Asegúrate de respetar y corregir las tildes "
-        "y eñes en los textos si detectas fallos de codificación."
+        "Eres un experto científico de datos. Tu tarea es explicar los campos de un dataset "
     )
     prompt_usuario = f"""
-    Contexto general: {contexto}
-
     Dataset: {dataset_nombre}
     Columnas y tipos:
     {columnas_y_tipos}
@@ -32,10 +28,7 @@ def analizar_dataset_con_contexto(dataset_nombre, df, contexto):
     Muestra de datos:
     {muestra_datos}
 
-    Responde en español con:
-    1. Propósito general del dataset en este contexto.
-    2. Qué columnas respaldan ese propósito.
-    3. Recomendación breve sobre su utilidad.
+    Responde en español con una Recomendación breve sobre su utilidad.
     """
     try:
         respuesta = client.chat.completions.create(
@@ -168,7 +161,7 @@ if archivos_a:
                     
                     res_json = json.loads(respuesta.choices[0].message.content)
                     
-                    texto_analisis = f"**Propósito General:** {res_json.get('proposito_general')}\n\n**Explicación de Campos:** {res_json.get('explicacion_campos')}"
+                    texto_analisis = f"{res_json.get('explicacion_campos')}"
                     st.session_state.analisis_datasets[dataset_name] = texto_analisis
                     
                     # 🌟 FILTRO PYTHON: Si la IA escribe una frase larga en vez de un nombre, la borramos
@@ -272,7 +265,7 @@ if archivos_a:
                         
                         def actualizar_orcid_ds(ds_key, aut_key, sb_k):
                             sel = st.session_state[sb_k]
-                            if sel and "0000-" in sel:
+                            if sel and "000" in sel:
                                 cod = sel.split(" - ")[0].strip()
                                 st.session_state.metadatos_datasets_editados[ds_key]["orcids_vinculados"][aut_key] = cod
                                 st.session_state[f"final_orcid_ds_{ds_key}_{aut_key}"] = cod
@@ -547,7 +540,7 @@ if archivos_b:
 st.markdown("---")
 
 # =====================================================================
-# --- SECCIÓN 3: GUARDAR COMBINACIONES ---
+# --- SECCIÓN 3: GUARDAR COMBINACIONES (CON MODO DE MEZCLA) ---
 # =====================================================================
 if datasets_dict or st.session_state.analisis_datasets:
     st.header("💾 3. Guardar Combinaciones Resultantes")
@@ -564,135 +557,206 @@ if datasets_dict or st.session_state.analisis_datasets:
     
     for idx in range(num_carpetas):
         with st.expander(f"📁 Configurar Carpeta {idx + 1}", expanded=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                nombre = st.text_input(f"Nombre carpeta {idx + 1}:", value=st.session_state.carpetas_destino[idx]["nombre"], key=f"n_carp_{idx}")
-                st.session_state.carpetas_destino[idx]["nombre"] = nombre
-            with col2:
-                ruta = st.text_input(f"Ruta base {idx + 1} (Vacío para Escritorio):", value=st.session_state.carpetas_destino[idx]["ruta"], key=f"r_carp_{idx}")
-                st.session_state.carpetas_destino[idx]["ruta"] = ruta
-            
+            nombre = st.text_input(f"Nombre carpeta {idx + 1}:", value=st.session_state.carpetas_destino[idx]["nombre"], key=f"n_carp_{idx}")
+            st.session_state.carpetas_destino[idx]["nombre"] = nombre
+
             datasets_seleccionados = st.multiselect(f"Datasets para Carpeta {idx + 1}:", options=list(datasets_dict.keys()), default=list(datasets_dict.keys()), key=f"sel_d_{idx}")
-            pdfs_seleccionados = st.multiselect(f"Artículos para Carpeta {idx + 1}:", options=list(articulos_dict.keys()), default=list(articulos_dict.keys()), key=f"sel_p_{idx}")
+            pdfs_seleccionados = st.multiselect(f"Artículos para Carpeta {idx + 1} (Opcional):", options=list(articulos_dict.keys()), default=list(articulos_dict.keys()), key=f"sel_p_{idx}")
             
             st.session_state.carpetas_destino[idx]["datasets_seleccionados"] = datasets_seleccionados
             st.session_state.carpetas_destino[idx]["pdfs_seleccionados"] = pdfs_seleccionados
 
-            if datasets_seleccionados and pdfs_seleccionados:
+            # 🎛️ INTERFAZ: Selector de estrategia para la IA
+            estrategia_contexto = "Solo Contexto Manual"
+            if pdfs_seleccionados:
+                estrategia_contexto = st.radio(
+                    f"🎯 Estrategia de Contexto para IA (Carpeta {idx + 1}):",
+                    options=["Solo Artículo", "Solo Contexto Manual del Dataset", "🧬 Mezclar Ambos Contextos (Artículo + Manual)"],
+                    index=2,  # Por defecto seleccionamos la mezcla
+                    key=f"est_ctx_{idx}"
+                )
+
+            # 🤖 GENERACIÓN DE RELACIONES CRUZADAS CON IA
+            if datasets_seleccionados:
                 if st.button(f"🤖 Generar Relaciones Cruzadas con IA (Carpeta {idx + 1})", key=f"btn_ia_{idx}"):
                     st.session_state.carpetas_destino[idx].setdefault("relaciones_cruzadas", {})
                     
-                    for p_name in pdfs_seleccionados:
-                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"].setdefault(p_name, {})
-                        contexto_art = st.session_state.metadatos_articulos_editados.get(p_name, {}).get("contexto_unico", "")
+                    for d_name in datasets_seleccionados:
+                        df = datasets_dict[d_name]
+                        contexto_dataset_manual = st.session_state.contextos_datasets.get(d_name, "").strip()
                         
-                        for d_name in datasets_seleccionados:
-                            df = datasets_dict[d_name]
-                            with st.spinner(f"Vinculando `{d_name}` con el artículo `{p_name}`..."):
-                                prompt_relacion = f"""
-                                Teniendo en cuenta el contexto único de este artículo académico: "{contexto_art}"
-                                Y evaluando este dataset '{d_name}' con las columnas: {df.columns.tolist()}
-                                Escribe una explicación clara en español (máximo 4 líneas) sobre cómo se relaciona este dataset.
-                                Asegúrate de incluir tildes correctas.
-                                """
-                                try:
-                                    res_ia = client.chat.completions.create(
-                                        model=MODELO_LLM,
-                                        messages=[{"role": "user", "content": prompt_relacion}],
-                                        temperature=0.3
-                                    )
-                                    st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = res_ia.choices[0].message.content.strip()
-                                except Exception as e:
-                                    st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = f"Error: {e}"
+                        if pdfs_seleccionados:
+                            for p_name in pdfs_seleccionados:
+                                st.session_state.carpetas_destino[idx]["relaciones_cruzadas"].setdefault(p_name, {})
+                                contexto_art = st.session_state.metadatos_articulos_editados.get(p_name, {}).get("contexto_unico", "").strip()
+                                
+                                # Definición de prompts según la estrategia seleccionada en la interfaz
+                                if estrategia_contexto == "Solo Artículo":
+                                    prompt_segmento = f"Contexto del artículo de referencia: \"{contexto_art}\""
+                                    instruccion_segmento = "Relaciona el dataset estrictamente con el contexto del artículo."
+                                elif estrategia_contexto == "Solo Contexto Manual del Dataset":
+                                    prompt_segmento = f"Contexto manual proporcionado: \"{contexto_dataset_manual}\""
+                                    instruccion_segmento = "Relaciona el dataset estrictamente con este contexto manual."
+                                else:  # 🧬 MODO MEZCLA
+                                    prompt_segmento = f"""
+                                    Contexto del Artículo Académico: "{contexto_art}"
+                                    Contexto Manual/Notas del Usuario: "{contexto_dataset_manual}"
+                                    """
+                                    instruccion_segmento = "Une y fusiona de forma coherente ambos contextos. Explica cómo las notas del usuario se alinean o complementan con el marco teórico del artículo aplicando los datos del archivo."
 
-            if "relaciones_cruzadas" in st.session_state.carpetas_destino[idx] and pdfs_seleccionados:
-                st.markdown("### 📝 Relaciones del Dataset con el Contexto de cada Artículo:")
-                for p_name in pdfs_seleccionados:
-                    if p_name in st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]:
-                        st.markdown(f"##### 📄 Artículo: `{p_name}`")
-                        for d_name in datasets_seleccionados:
-                            relacion_actual = st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name].get(d_name, "")
-                            rel_editada = st.text_area(f"Relación de `{d_name}` con este paper:", value=relacion_actual, height=80, key=f"area_{idx}_{p_name}_{d_name}")
-                            st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = rel_editada
+                                with st.spinner(f"Procesando en modo [{estrategia_contexto}] para `{d_name}`..."):
+                                    prompt_relacion = f"""
+                                    Analiza el dataset '{d_name}' que contiene las siguientes columnas: {df.columns.tolist()}
+                                    
+                                    Considerando la siguiente información base:
+                                    {prompt_segmento}
+                                    
+                                    Tarea: {instruccion_segmento}
+                                    Escribe una explicación analítica y formal en español (máximo 4 líneas). Asegúrate de incluir tildes correctas.
+                                    """
+                                    try:
+                                        res_ia = client.chat.completions.create(
+                                            model=MODELO_LLM,
+                                            messages=[{"role": "user", "content": prompt_relacion}],
+                                            temperature=0.4
+                                        )
+                                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = res_ia.choices[0].message.content.strip()
+                                    except Exception as e:
+                                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = f"Error: {e}"
+                        else:
+                            # CASO SIN ARTÍCULOS: Forzado a usar Contexto Manual
+                            st.session_state.carpetas_destino[idx]["relaciones_cruzadas"].setdefault("Sin Artículo", {})
+                            if not contexto_dataset_manual:
+                                st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = "No se proporcionó contexto manual ni artículo."
+                            else:
+                                with st.spinner(f"Analizando dataset `{d_name}` respecto a tu contexto manual..."):
+                                    prompt_relacion_solo_ds = f"""
+                                    Contexto específico del dataset: "{contexto_dataset_manual}"
+                                    Columnas del dataset '{d_name}': {df.columns.tolist()}
+                                    Genera una explicación analítica en español (máximo 4 líneas) de cómo este archivo se aplica a ese contexto descriptivo.
+                                    """
+                                    try:
+                                        res_ia = client.chat.completions.create(
+                                            model=MODELO_LLM,
+                                            messages=[{"role": "user", "content": prompt_relacion_solo_ds}],
+                                            temperature=0.3
+                                        )
+                                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = res_ia.choices[0].message.content.strip()
+                                    except Exception as e:
+                                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = f"Error: {e}"
 
-    if st.button("💾 Guardar Estructura Completa en Carpetas Físicas", type="primary", use_container_width=True):
-        for idx, config_carpeta in enumerate(st.session_state.carpetas_destino):
-            nombre_carpeta = config_carpeta["nombre"] or f"proyecto_{idx + 1}"
-            ruta_base = config_carpeta["ruta"]
-            ruta_final = Path(ruta_base) / nombre_carpeta if ruta_base else Path.home() / "Desktop" / nombre_carpeta
-            ruta_final.mkdir(parents=True, exist_ok=True)
+            # Mostrar y editar las relaciones generadas en la UI
+            if "relaciones_cruzadas" in st.session_state.carpetas_destino[idx]:
+                st.markdown("### 📝 Relaciones del Dataset con el Contexto:")
+                if pdfs_seleccionados:
+                    for p_name in pdfs_seleccionados:
+                        if p_name in st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]:
+                            st.markdown(f"##### 📄 Artículo: `{p_name}`")
+                            for d_name in datasets_seleccionados:
+                                relacion_actual = st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name].get(d_name, "")
+                                rel_editada = st.text_area(f"Relación de `{d_name}`:", value=relacion_actual, height=80, key=f"area_{idx}_{p_name}_{d_name}")
+                                st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = rel_editada
+                elif "Sin Artículo" in st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]:
+                    st.markdown("##### 📊 Análisis basado en tu Contexto Escrito (Sin Artículo)")
+                    for d_name in datasets_seleccionados:
+                        relacion_actual = st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"].get(d_name, "")
+                        rel_editada = st.text_area(f"Relación analítica de `{d_name}`:", value=relacion_actual, height=80, key=f"area_solo_ds_{idx}_{d_name}")
+                        st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = rel_editada
+
+    # 💾 PROCESO DE GUARDADO FÍSICO Y LOGICA DEL JSON ESTRUCTURADO CON AUTORES
+    if st.button("💾 Guardar", type="primary", use_container_width=True):
+        nombres_incompletos = any(not config.get("nombre") for config in st.session_state.carpetas_destino)
+        if nombres_incompletos:
+            st.warning("Por favor, complete los nombres de todas las carpetas.")
+        else:
+            # 🔄 TODO este bloque ahora se ejecuta correctamente PARA CADA CARPETA
+            for idx, config_carpeta in enumerate(st.session_state.carpetas_destino):
+                nombre_carpeta = config_carpeta["nombre"] or f"proyecto_{idx + 1}"
+                ruta_final = Path(".") / "investigaciones" / nombre_carpeta
+                ruta_final.mkdir(parents=True, exist_ok=True)
             
-            (ruta_final / "datasets").mkdir(exist_ok=True)
-            (ruta_final / "articulos").mkdir(exist_ok=True)
-            
-            for d_name in config_carpeta.get("datasets_seleccionados", []):
-                if d_name in datasets_dict:
-                    df = datasets_dict[d_name]
-                    df.to_csv(ruta_final / "datasets" / d_name, index=False) if d_name.endswith('.csv') else df.to_excel(ruta_final / "datasets" / d_name, index=False)
-            
-            for p_name in config_carpeta.get("pdfs_seleccionados", []):
-                if p_name in articulos_dict:
-                    with open(ruta_final / "articulos" / p_name, 'wb') as f:
-                        f.write(articulos_dict[p_name])
-            
-            json_salida = {
-                "fecha_subida": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")),
-                "articulos": [],
-                "datasets_globales": []
-            }
-            
-            # 1. Guardar autores y datos de los Datasets dentro de la estructura general
-            for d_name in config_carpeta.get("datasets_seleccionados", []):
-                meta_ds = st.session_state.metadatos_datasets_editados.get(d_name, {})
-                lista_autores_ds = meta_ds.get("autores_finales_seleccionados", [])
+                # 🛠️ Indentado dentro del bucle de carpetas
+                (ruta_final / "datasets").mkdir(exist_ok=True)
+                (ruta_final / "articulos").mkdir(exist_ok=True)
                 
-                if not lista_autores_ds:
-                    autores_ds_json = ""
-                else:
-                    autores_ds_json = [{
+                for d_name in config_carpeta.get("datasets_seleccionados", []):
+                    if d_name in datasets_dict:
+                        df = datasets_dict[d_name]
+                        df.to_csv(ruta_final / "datasets" / d_name, index=False) if d_name.endswith('.csv') else df.to_excel(ruta_final / "datasets" / d_name, index=False)
+                
+                for p_name in config_carpeta.get("pdfs_seleccionados", []):
+                    if p_name in articulos_dict:
+                        with open(ruta_final / "articulos" / p_name, 'wb') as f:
+                            f.write(articulos_dict[p_name])
+                
+                # Formato de JSON Limpio
+                json_salida = {
+                    "proyecto_nombre": nombre_carpeta,
+                    "fecha": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    "articulos": [],
+                    "datasets": []
+                }
+                
+                relaciones = config_carpeta.get("relaciones_cruzadas", {})
+                
+                # 1. Artículos
+                if config_carpeta.get("pdfs_seleccionados", []):
+                    for p_name in config_carpeta["pdfs_seleccionados"]:
+                        meta_art = st.session_state.metadatos_articulos_editados.get(p_name, {})
+                        lista_autores_art = meta_art.get("autores_finales_seleccionados", [])
+                        
+                        autores_art_json = "" if not lista_autores_art else [{
+                            "nombre": autor_nom,
+                            "orcid": meta_art.get("orcids_vinculados", {}).get(autor_nom, "")
+                        } for autor_nom in lista_autores_art]
+                        
+                        estructura_articulo = {
+                            "nombre_articulo": p_name,
+                            "titulo_documento": meta_art.get("titulo", p_name),
+                            "contexto_general": meta_art.get("contexto_unico", "").strip(),
+                            "autores": autores_art_json,
+                            "relaciones_datasets": []
+                        }
+                        
+                        for d_name in config_carpeta.get("datasets_seleccionados", []):
+                            texto_relacion = ""
+                            if p_name in relaciones and d_name in relaciones[p_name]:
+                                texto_relacion = relaciones[p_name][d_name].strip()
+                            
+                            estructura_articulo["relaciones_datasets"].append({
+                                "nombre_dataset": d_name,
+                                "relacion_con_contexto": texto_relacion if texto_relacion else "Sin relación generada."
+                            })
+                        
+                        json_salida["articulos"].append(estructura_articulo)
+                
+                # 2. Datasets
+                for d_name in config_carpeta.get("datasets_seleccionados", []):
+                    meta_ds = st.session_state.metadatos_datasets_editados.get(d_name, {})
+                    lista_autores_ds = meta_ds.get("autores_finales_seleccionados", [])
+                    
+                    autores_ds_json = "" if not lista_autores_ds else [{
                         "nombre": a_nom,
                         "orcid": meta_ds.get("orcids_vinculados", {}).get(a_nom, "")
                     } for a_nom in lista_autores_ds]
-                
-                json_salida["datasets_globales"].append({
-                    "archivo": d_name,
-                    "autores": autores_ds_json,
-                    "contexto_asociado": st.session_state.contextos_datasets.get(d_name, ""),
-                    "analisis_estructural": st.session_state.analisis_datasets.get(d_name, "")
-                })
-            
-            # 2. Guardar artículos con sus autores y relaciones
-            for p_name in config_carpeta.get("pdfs_seleccionados", []):
-                meta_art = st.session_state.metadatos_articulos_editados.get(p_name, {})
-                lista_autores_art = meta_art.get("autores_finales_seleccionados", [])
-                
-                if not lista_autores_art:
-                    autores_art_json = ""
-                else:
-                    autores_art_json = [{
-                        "nombre": autor_nom,
-                        "orcid": meta_art.get("orcids_vinculados", {}).get(autor_nom, "")
-                    } for autor_nom in lista_autores_art]
-                
-                estructura_articulo = {
-                    "titulo": meta_art.get("titulo", p_name),
-                    "autores": autores_art_json,
-                    "contexto_unico": meta_art.get("contexto_unico", ""),
-                    "relaciones_datasets": []
-                }
-                
-                for d_name in config_carpeta.get("datasets_seleccionados", []):
-                    relacion_explicacion = config_carpeta.get("relaciones_cruzadas", {}).get(p_name, {}).get(d_name, "Sin relación generada.")
-                    estructura_articulo["relaciones_datasets"].append({
-                        "archivo_dataset": d_name,
-                        "relacion_con_contexto": relacion_explicacion
+                    
+                    analisis_estructural = st.session_state.analisis_datasets.get(d_name, "").strip()
+                    contexto_manual = st.session_state.contextos_datasets.get(d_name, "").strip()
+                    
+                    relacion_aislada = ""
+                    if not config_carpeta.get("pdfs_seleccionados", []) and "Sin Artículo" in relaciones:
+                        if d_name in relaciones["Sin Artículo"]:
+                            relacion_aislada = relaciones["Sin Artículo"][d_name].strip()
+
+                    json_salida["datasets"].append({
+                        "nombre_dataset": d_name,
+                        "explicacion_estructura": analisis_estructural,
+                        "contexto_specifico_manual": contexto_manual,
+                        "analisis_contextual": relacion_aislada if relacion_aislada else "",
+                        "autores": autores_ds_json
                     })
                 
-                json_salida["articulos"].append(estructura_articulo)
-            
-            # Guardado definitivo con tildes forzadas en UTF-8
-            json_string = json.dumps(json_salida, indent=4, ensure_ascii=False)
-            (ruta_final / "metadatos.json").write_text(json_string, encoding='utf-8')
-                
-        st.success("🎉 ¡Estructura y metadatos JSON unificados guardados con éxito en disco!")
-        st.balloons()
+                json_string = json.dumps(json_salida, indent=4, ensure_ascii=False)
+                (ruta_final / "metadatos.json").write_text(json_string, encoding='utf-8')
+                    
+            st.success("🎉 ¡Todas las carpetas y sus estructuras JSON se han guardado con éxito!")
