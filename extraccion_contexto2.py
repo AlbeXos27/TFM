@@ -9,7 +9,7 @@ import requests
 import re
 
 # 🔑 Configuración de Credenciales y Modelos
-API_KEY_GROQ = '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'
+API_KEY_GROQ = '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'
 MODELO_LLM = "meta-llama/llama-4-scout-17b-16e-instruct"
 client = Groq(api_key=API_KEY_GROQ)
 
@@ -79,6 +79,14 @@ def buscar_en_orcid_real(nombre_autor):
         return [f"Aviso: Sin conexión con ORCID ({str(e)})"]
 
 
+# 🧠 Función para extraer inteligentemente el Abstract/Introducción de un PDF
+def extraer_zona_contexto_pdf(texto_completo):
+    match = re.search(r'(abstract|resumen)(.*?)(1\.\s+introduction|1\.\s+introducción|2\.\s+|prolegómenos)', texto_completo, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(0)[:6000]
+    return texto_completo[:5000]
+
+
 # 🛠️ Configuración global de la interfaz
 st.set_page_config(layout="wide")
 
@@ -131,7 +139,6 @@ if archivos_a:
                     "Asegúrate de escribir correctamente los nombres propios con sus tildes y eñes correspondientes en español."
                 )
                 
-                # 🌟 MEJORA PROMPT: Regla estricta para evitar textos alternativos si no hay autores
                 prompt_usuario = f"""
                 Analiza el archivo '{dataset_name}'.
                 Columnas y tipos de datos:
@@ -164,7 +171,6 @@ if archivos_a:
                     texto_analisis = f"{res_json.get('explicacion_campos')}"
                     st.session_state.analisis_datasets[dataset_name] = texto_analisis
                     
-                    # 🌟 FILTRO PYTHON: Si la IA escribe una frase larga en vez de un nombre, la borramos
                     autores_raw = res_json.get("autores_detectados", [])
                     autores_filtrados = [
                         a for a in autores_raw 
@@ -214,7 +220,6 @@ if archivos_a:
                 st.session_state.contextos_datasets[dataset_seleccionado] = contexto_dataset
                 st.success("✅ Contexto guardado para este dataset")
                 
-            # 👥 CONTROL DE AUTORES DEL DATASET
             st.markdown("#### 👥 Autores / Creadores del Dataset")
             datos_ds_actuales = st.session_state.metadatos_datasets_editados[dataset_seleccionado]
             
@@ -253,7 +258,6 @@ if archivos_a:
                         del datos_ds_actuales["orcids_vinculados"][autor_ds_a_eliminar]
                     st.rerun()
 
-                # Gestión ORCID para Datasets
                 st.markdown("##### 🔍 Identificador ORCID para Creadores de Datasets")
                 for autor_ds in autores_ds_actuales:
                     if autor_ds not in datos_ds_actuales.get("resultados_busqueda_api", {}):
@@ -319,7 +323,7 @@ if archivos_b:
                     autores_metadatos = [a.strip() for a in autor_limpio.split(",") if a.strip()]
 
             texto_pdf = ""
-            num_paginas_extraer = min(3, len(lector_pdf.pages))
+            num_paginas_extraer = min(5, len(lector_pdf.pages))
             for i in range(num_paginas_extraer):
                 try:
                     texto_pdf += f"\n--- Página {i+1} ---\n"
@@ -351,33 +355,50 @@ if archivos_b:
         
         if not datos_actuales.get("autores_detectados") and "titulo" not in datos_actuales:
             if articulo_visualizar in st.session_state.textos_articulos:
-                texto_pdf = st.session_state.textos_articulos[articulo_visualizar][:4000]
                 
-                with st.spinner(f"Extrayendo autores y contexto de {articulo_visualizar} con IA..."):
-                    # 🌟 MEJORA PROMPT ARTÍCULOS: Regla estricta para evitar frases explicativas
-                    prompt_metadatos = f"""
-                    Analiza este fragmento de un documento académico y extrae la información.
-                    Necesito el título del artículo, una lista de los nombres de los autores, y un resumen único del contexto.
-                    Corrija activamente cualquier fallo de caracteres o tildes rotas que provengan de la extracción del documento.
+                # 1. Recuperamos el texto completo extraído (las primeras 5 páginas)
+                texto_completo = st.session_state.textos_articulos[articulo_visualizar]
+                
+                # 2. Aseguramos aislar la primera página, que contiene la info crítica de autores
+                lineas_texto = texto_completo.split("\n--- Página 2 ---")
+                primera_pagina = lineas_texto[0] if len(lineas_texto) > 0 else texto_completo
+
+                with st.spinner(f"Extrayendo autores y contexto científico de {articulo_visualizar} con IA..."):
+                    # Pasamos los metadatos limpios como ayuda al prompt para que la IA sepa qué buscar
+                    pistas_metadatos = ", ".join(datos_actuales.get("autores_pdf_metadatos", []))
                     
-                    CRÍTICO: Si no consigues identificar autores, deja el arreglo "autores_detectados" completamente vacío: []. No metas frases descriptivas adentro.
+                    prompt_metadatos = f"""
+                    Analiza la primera página y el contexto de este documento académico para mapear sus metadatos esenciales.
+                    Necesito el título exacto del artículo, una lista limpia de los nombres propios de los autores y un resumen preciso de su marco científico.
+                    
+                    Pistas de autores recuperados de los metadatos del archivo: [{pistas_metadatos}]
+                    
+                    INSTRUCCIONES CRÍTICAS:
+                    1. Revisa minuciosamente la primera página. Los nombres de los autores suelen estar juntos debajo del título.
+                    2. Cruza el texto con las 'Pistas de autores'. Si los metadatos tienen nombres válidos, inclúyelos en el listado final.
+                    3. Corrige activamente cualquier fallo de caracteres extraños, ligaduras de fuentes o tildes rotas que provengan de la extracción del PDF.
+                    4. Si no consigues identificar autores en absoluto, deja el arreglo "autores_detectados" vacío: [].
                     
                     Responde ÚNICAMENTE con un objeto JSON estructurado con este formato exacto:
                     {{
                         "titulo": "Título completo del documento con tildes correctas",
-                        "autores_detectados": [],
-                        "contexto_unico": "Resumen del marco académico de este paper."
+                        "autores_detectados": ["Autor 1", "Autor 2", "Autor 3"],
+                        "contexto_unico": "Resumen integrado del marco académico, objetivos e hipótesis del paper."
                     }}
                     
-                    Texto:
-                    {texto_pdf}
+                    --- TEXTO DE LA PRIMERA PÁGINA (CRÍTICO) ---
+                    {primera_pagina}
+                    
+                    --- RESTO DEL CONTEXTO DEL DOCUMENTO ---
+                    {texto_completo[:4000]}
                     """
+                    
                     try:
                         respuesta = client.chat.completions.create(
                             model=MODELO_LLM,
                             messages=[{"role": "user", "content": prompt_metadatos}],
                             response_format={"type": "json_object"},
-                            temperature=0.2
+                            temperature=0.1
                         )
                         
                         try:
@@ -390,7 +411,6 @@ if archivos_b:
                         datos_actuales["titulo"] = resultado.get("titulo", articulo_visualizar)
                         datos_actuales["contexto_unico"] = resultado.get("contexto_unico", "No se pudo generar el contexto automáticamente.")
                         
-                        # 🌟 FILTRO PYTHON ARTÍCULOS
                         autores_art_raw = resultado.get("autores_detectados", [])
                         autores_art_filtrados = [
                             a for a in autores_art_raw 
@@ -399,10 +419,13 @@ if archivos_b:
                         
                         datos_actuales["autores_detectados"] = autores_art_filtrados
                         
+                        # Combinamos metadatos limpios + IA evitando duplicados vacíos
                         lista_inicial = list(set(datos_actuales["autores_pdf_metadatos"] + datos_actuales["autores_detectados"]))
                         datos_actuales["autores_finales_seleccionados"] = [a for a in lista_inicial if a]
                         
                         st.success("✅ Autores y contexto inicializados con IA")
+                        st.rerun() # Forzamos recarga para pintar los cambios inmediatamente en la UI
+                        
                     except Exception as e:
                         datos_actuales["titulo"] = articulo_visualizar
                         datos_actuales["contexto_unico"] = "No se pudo generar el contexto automáticamente."
@@ -540,10 +563,10 @@ if archivos_b:
 st.markdown("---")
 
 # =====================================================================
-# --- SECCIÓN 3: GUARDAR COMBINACIONES (CON MODO DE MEZCLA) ---
+# --- SECCIÓN 3: GUARDAR COMBINACIONES Y ALTMETRICS ---
 # =====================================================================
 if datasets_dict or st.session_state.analisis_datasets:
-    st.header("💾 3. Guardar Combinaciones Resultantes")
+    st.header("💾 3. Guardar Combinaciones Resultantes y Altmetrics")
     
     if 'carpetas_destino' not in st.session_state:
         st.session_state.carpetas_destino = []
@@ -551,7 +574,7 @@ if datasets_dict or st.session_state.analisis_datasets:
     num_carpetas = st.number_input("¿Cuántas carpetas deseas crear?", min_value=1, max_value=10, value=1, step=1)
     
     if len(st.session_state.carpetas_destino) < num_carpetas:
-        st.session_state.carpetas_destino.extend([{"nombre": "", "ruta": "", "relaciones_cruzadas": {}} for _ in range(num_carpetas - len(st.session_state.carpetas_destino))])
+        st.session_state.carpetas_destino.extend([{"nombre": "", "ruta": "", "relaciones_cruzadas": {}, "altmetrics": {}} for _ in range(num_carpetas - len(st.session_state.carpetas_destino))])
     elif len(st.session_state.carpetas_destino) > num_carpetas:
         st.session_state.carpetas_destino = st.session_state.carpetas_destino[:num_carpetas]
     
@@ -566,21 +589,22 @@ if datasets_dict or st.session_state.analisis_datasets:
             st.session_state.carpetas_destino[idx]["datasets_seleccionados"] = datasets_seleccionados
             st.session_state.carpetas_destino[idx]["pdfs_seleccionados"] = pdfs_seleccionados
 
-            # 🎛️ INTERFAZ: Selector de estrategia para la IA
             estrategia_contexto = "Solo Contexto Manual"
             if pdfs_seleccionados:
                 estrategia_contexto = st.radio(
                     f"🎯 Estrategia de Contexto para IA (Carpeta {idx + 1}):",
                     options=["Solo Artículo", "Solo Contexto Manual del Dataset", "🧬 Mezclar Ambos Contextos (Artículo + Manual)"],
-                    index=2,  # Por defecto seleccionamos la mezcla
+                    index=2,
                     key=f"est_ctx_{idx}"
                 )
 
-            # 🤖 GENERACIÓN DE RELACIONES CRUZADAS CON IA
+            # 🤖 PROCESADOR DE INTELIGENCIA ARTIFICIAL DE RELACIONES + ALTMETRICS
             if datasets_seleccionados:
-                if st.button(f"🤖 Generar Relaciones Cruzadas con IA (Carpeta {idx + 1})", key=f"btn_ia_{idx}"):
+                if st.button(f"🤖 Ejecutar Análisis Científico e Impacto Altmetrics (Carpeta {idx + 1})", key=f"btn_ia_{idx}"):
                     st.session_state.carpetas_destino[idx].setdefault("relaciones_cruzadas", {})
+                    st.session_state.carpetas_destino[idx].setdefault("altmetrics", {})
                     
+                    # Parte A: Relaciones Cruzadas Académicas
                     for d_name in datasets_seleccionados:
                         df = datasets_dict[d_name]
                         contexto_dataset_manual = st.session_state.contextos_datasets.get(d_name, "").strip()
@@ -590,29 +614,32 @@ if datasets_dict or st.session_state.analisis_datasets:
                                 st.session_state.carpetas_destino[idx]["relaciones_cruzadas"].setdefault(p_name, {})
                                 contexto_art = st.session_state.metadatos_articulos_editados.get(p_name, {}).get("contexto_unico", "").strip()
                                 
-                                # Definición de prompts según la estrategia seleccionada en la interfaz
                                 if estrategia_contexto == "Solo Artículo":
-                                    prompt_segmento = f"Contexto del artículo de referencia: \"{contexto_art}\""
-                                    instruccion_segmento = "Relaciona el dataset estrictamente con el contexto del artículo."
+                                    prompt_segmento = f"CONTEXTO BASE DEL ARTÍCULO DE REFERENCIA:\n\"{contexto_art}\""
+                                    instruccion_segmento = "Relaciona las variables y campos del dataset estrictamente con el marco teórico y las hipótesis analíticas del artículo."
                                 elif estrategia_contexto == "Solo Contexto Manual del Dataset":
-                                    prompt_segmento = f"Contexto manual proporcionado: \"{contexto_dataset_manual}\""
-                                    instruccion_segmento = "Relaciona el dataset estrictamente con este contexto manual."
-                                else:  # 🧬 MODO MEZCLA
+                                    prompt_segmento = f"CONTEXTO MANUAL OPERATIVO DEL USUARIO:\n\"{contexto_dataset_manual}\""
+                                    instruccion_segmento = "Explica detalladamente cómo la estructura y tipos de campos de este dataset sirven para medir u operacionalizar este contexto manual."
+                                else:  
                                     prompt_segmento = f"""
-                                    Contexto del Artículo Académico: "{contexto_art}"
-                                    Contexto Manual/Notas del Usuario: "{contexto_dataset_manual}"
+                                    [MARCO ACADÉMICO DEL PAPER]: "{contexto_art}"
+                                    [ENFOQUE / ANOTACIONES DEL USUARIO]: "{contexto_dataset_manual}"
                                     """
-                                    instruccion_segmento = "Une y fusiona de forma coherente ambos contextos. Explica cómo las notas del usuario se alinean o complementan con el marco teórico del artículo aplicando los datos del archivo."
+                                    instruccion_segmento = """Ejecuta conceptualmente los siguientes pasos antes de redactar:
+                                    1. Encuentra el puente teórico que conecta el paper académico con las notas prácticas del usuario.
+                                    2. Explica analíticamente cómo los campos del archivo del dataset permiten ejecutar empíricamente esa conexión o complementar la investigación."""
 
-                                with st.spinner(f"Procesando en modo [{estrategia_contexto}] para `{d_name}`..."):
+                                with st.spinner(f"Mapeando relaciones para `{d_name}`..."):
                                     prompt_relacion = f"""
-                                    Analiza el dataset '{d_name}' que contiene las siguientes columnas: {df.columns.tolist()}
-                                    
-                                    Considerando la siguiente información base:
+                                    Actúa como un metodólogo científico y experto en analítica de datos. 
                                     {prompt_segmento}
+                                    DATASET OBJETO DE ESTUDIO:
+                                    - Nombre del archivo: '{d_name}'
+                                    - Atributos / Columnas del archivo: {df.columns.tolist()}
+                                    MISION DEL ANALISIS: {instruccion_segmento}
                                     
-                                    Tarea: {instruccion_segmento}
-                                    Escribe una explicación analítica y formal en español (máximo 4 líneas). Asegúrate de incluir tildes correctas.
+                                    REGLAS ESTRICTAS DE SALIDA:
+                                    - Redacta una explicación fluida, analítica y estrictamente formal en español (máximo 4 líneas).
                                     """
                                     try:
                                         res_ia = client.chat.completions.create(
@@ -624,16 +651,15 @@ if datasets_dict or st.session_state.analisis_datasets:
                                     except Exception as e:
                                         st.session_state.carpetas_destino[idx]["relaciones_cruzadas"][p_name][d_name] = f"Error: {e}"
                         else:
-                            # CASO SIN ARTÍCULOS: Forzado a usar Contexto Manual
                             st.session_state.carpetas_destino[idx]["relaciones_cruzadas"].setdefault("Sin Artículo", {})
                             if not contexto_dataset_manual:
                                 st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = "No se proporcionó contexto manual ni artículo."
                             else:
-                                with st.spinner(f"Analizando dataset `{d_name}` respecto a tu contexto manual..."):
+                                with st.spinner(f"Analizando dataset `{d_name}`..."):
                                     prompt_relacion_solo_ds = f"""
-                                    Contexto específico del dataset: "{contexto_dataset_manual}"
-                                    Columnas del dataset '{d_name}': {df.columns.tolist()}
-                                    Genera una explicación analítica en español (máximo 4 líneas) de cómo este archivo se aplica a ese contexto descriptivo.
+                                    CONTEXTO ESPECÍFICO DEL DATASET: "{contexto_dataset_manual}"
+                                    Estructura del archivo '{d_name}': {df.columns.tolist()}
+                                    Genera una explicación analítica y formal en español (máximo 4 líneas) sobre cómo los datos se aplican al contexto.
                                     """
                                     try:
                                         res_ia = client.chat.completions.create(
@@ -644,9 +670,47 @@ if datasets_dict or st.session_state.analisis_datasets:
                                         st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = res_ia.choices[0].message.content.strip()
                                     except Exception as e:
                                         st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = f"Error: {e}"
+                    
+                    # Parte B: 🚀 Generación de Estrategia Altmetrics (Marketing Académico)
+                    ctx_altmetrics_origen = ""
+                    if pdfs_seleccionados:
+                        ctx_altmetrics_origen = st.session_state.metadatos_articulos_editados.get(pdfs_seleccionados[0], {}).get("contexto_unico", "")
+                    else:
+                        ctx_altmetrics_origen = st.session_state.contextos_datasets.get(datasets_seleccionados[0], "")
+
+                    with st.spinner("Generando Estrategia de Difusión Digital e Impacto Altmetrics..."):
+                        prompt_altmetrics = f"""
+                        Eres un experto en comunicación de la ciencia y métricas alternativas (Altmetrics).
+                        Tu objetivo es redactar contenido para maximizar el impacto social y digital del siguiente marco de investigación:
+                        "{ctx_altmetrics_origen}"
+                        
+                        Genera obligatoriamente un formato JSON válido y estricto con los siguientes campos:
+                        {{
+                            "post_facebook": "Un post divulgativo largo adaptado al tono dinámico de Facebook, cercano pero riguroso, ideal para compartir en páginas de debate o grupos de investigación.",
+                            "tweet_difusion": "Un tweet de divulgación científica riguroso, que llame a la acción, use hashtags académicos y mida menos de 260 caracteres.",
+                            "post_linkedin": "Un artículo profesional corto de 2 párrafos enfocado en el impacto, beneficios metodológicos y alcances del proyecto.",
+                            "comunidad_objetivo": "Lista separada por comas de instituciones, ONGs, entidades públicas o foros donde este dataset y paper deben ser discutidos."
+                        }}
+                        Responde en español y cuida perfectamente las tildes.
+                        """
+                        try:
+                            res_alt = client.chat.completions.create(
+                                model=MODELO_LLM,
+                                messages=[{"role": "user", "content": prompt_altmetrics}],
+                                response_format={"type": "json_object"},
+                                temperature=0.6
+                            )
+                            st.session_state.carpetas_destino[idx]["altmetrics"] = json.loads(res_alt.choices[0].message.content)
+                        except Exception as e:
+                            st.session_state.carpetas_destino[idx]["altmetrics"] = {
+                                "post_facebook": "Error al generar post automático de Facebook.",
+                                "tweet_difusion": "Error al generar tuit automático.",
+                                "post_linkedin": "Error al generar post automático.",
+                                "comunidad_objetivo": "Error al procesar objetivos."
+                            }
 
             # Mostrar y editar las relaciones generadas en la UI
-            if "relaciones_cruzadas" in st.session_state.carpetas_destino[idx]:
+            if "relaciones_cruzadas" in st.session_state.carpetas_destino[idx] and st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]:
                 st.markdown("### 📝 Relaciones del Dataset con el Contexto:")
                 if pdfs_seleccionados:
                     for p_name in pdfs_seleccionados:
@@ -663,19 +727,66 @@ if datasets_dict or st.session_state.analisis_datasets:
                         rel_editada = st.text_area(f"Relación analítica de `{d_name}`:", value=relacion_actual, height=80, key=f"area_solo_ds_{idx}_{d_name}")
                         st.session_state.carpetas_destino[idx]["relaciones_cruzadas"]["Sin Artículo"][d_name] = rel_editada
 
-    # 💾 PROCESO DE GUARDADO FÍSICO Y LOGICA DEL JSON ESTRUCTURADO CON AUTORES
-    if st.button("💾 Guardar", type="primary", use_container_width=True):
+                # ⚡ PANELES VISUALES EN CUADROS INDEPENDIENTES (Alineados en Columnas en Paralelo)
+                st.markdown("### 🚀 Estrategia de Difusión (Altmetrics Score Booster)")
+                alt_data = st.session_state.carpetas_destino[idx].get("altmetrics", {})
+                
+                col_fb, col_li, col_x = st.columns(3)
+                
+                with col_fb:
+                    with st.container(border=True):
+                        st.markdown("##### 👥 Facebook Impact")
+                        fb_editado = st.text_area(
+                            "Contenido para comunidades/muros:", 
+                            value=alt_data.get("post_facebook", ""), 
+                            height=200, 
+                            key=f"fb_edit_{idx}"
+                        )
+                        st.session_state.carpetas_destino[idx]["altmetrics"]["post_facebook"] = fb_editado
+                        
+                with col_li:
+                    with st.container(border=True):
+                        st.markdown("##### 💼 LinkedIn Professional")
+                        li_editado = st.text_area(
+                            "Post largo de impacto científico:", 
+                            value=alt_data.get("post_linkedin", ""), 
+                            height=200, 
+                            key=f"li_edit_{idx}"
+                        )
+                        st.session_state.carpetas_destino[idx]["altmetrics"]["post_linkedin"] = li_editado
+                        
+                with col_x:
+                    with st.container(border=True):
+                        st.markdown("##### 🐦 Twitter / X")
+                        tw_editado = st.text_area(
+                            "Hilado o tuit resumen (Max 280 car.):", 
+                            value=alt_data.get("tweet_difusion", ""), 
+                            height=200, 
+                            key=f"tw_edit_{idx}"
+                        )
+                        st.session_state.carpetas_destino[idx]["altmetrics"]["tweet_difusion"] = tw_editado
+                        st.caption(f"Caracteres: {len(tw_editado)} / 280")
+                
+                with st.container(border=True):
+                    st.markdown("##### 🎯 Comunidades Objetivo e Indexación Digital")
+                    tgt_editado = st.text_input(
+                        "Nichos de debate y entidades sugeridas:", 
+                        value=alt_data.get("comunidad_objetivo", ""), 
+                        key=f"tgt_edit_{idx}"
+                    )
+                    st.session_state.carpetas_destino[idx]["altmetrics"]["comunidad_objetivo"] = tgt_editado
+
+    # 💾 PROCESO DE GUARDADO FÍSICO Y LÓGICA DEL JSON ESTRUCTURADO CON ALTMETRICS
+    if st.button("💾 Guardar Todo de Forma Local", type="primary", use_container_width=True):
         nombres_incompletos = any(not config.get("nombre") for config in st.session_state.carpetas_destino)
         if nombres_incompletos:
             st.warning("Por favor, complete los nombres de todas las carpetas.")
         else:
-            # 🔄 TODO este bloque ahora se ejecuta correctamente PARA CADA CARPETA
             for idx, config_carpeta in enumerate(st.session_state.carpetas_destino):
                 nombre_carpeta = config_carpeta["nombre"] or f"proyecto_{idx + 1}"
                 ruta_final = Path(".") / "investigaciones" / nombre_carpeta
                 ruta_final.mkdir(parents=True, exist_ok=True)
             
-                # 🛠️ Indentado dentro del bucle de carpetas
                 (ruta_final / "datasets").mkdir(exist_ok=True)
                 (ruta_final / "articulos").mkdir(exist_ok=True)
                 
@@ -689,17 +800,17 @@ if datasets_dict or st.session_state.analisis_datasets:
                         with open(ruta_final / "articulos" / p_name, 'wb') as f:
                             f.write(articulos_dict[p_name])
                 
-                # Formato de JSON Limpio
+                # Construcción estructural del JSON de salida
                 json_salida = {
                     "proyecto_nombre": nombre_carpeta,
                     "fecha": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")),
                     "articulos": [],
-                    "datasets": []
+                    "datasets": [],
+                    "estrategia_altmetrics": config_carpeta.get("altmetrics", {})
                 }
                 
                 relaciones = config_carpeta.get("relaciones_cruzadas", {})
                 
-                # 1. Artículos
                 if config_carpeta.get("pdfs_seleccionados", []):
                     for p_name in config_carpeta["pdfs_seleccionados"]:
                         meta_art = st.session_state.metadatos_articulos_editados.get(p_name, {})
@@ -730,7 +841,6 @@ if datasets_dict or st.session_state.analisis_datasets:
                         
                         json_salida["articulos"].append(estructura_articulo)
                 
-                # 2. Datasets
                 for d_name in config_carpeta.get("datasets_seleccionados", []):
                     meta_ds = st.session_state.metadatos_datasets_editados.get(d_name, {})
                     lista_autores_ds = meta_ds.get("autores_finales_seleccionados", [])
@@ -759,4 +869,4 @@ if datasets_dict or st.session_state.analisis_datasets:
                 json_string = json.dumps(json_salida, indent=4, ensure_ascii=False)
                 (ruta_final / "metadatos.json").write_text(json_string, encoding='utf-8')
                     
-            st.success("🎉 ¡Todas las carpetas y sus estructuras JSON se han guardado con éxito!")
+            st.success("🎉 ¡Estructuras guardadas con éxito, incluyendo la sección de Altmetrics en paralelos con bordes!")
