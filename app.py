@@ -4,6 +4,7 @@ from groq import Groq
 from pathlib import Path
 from client_ia.request_Groq import encontrar_autores_ia, generar_contexto_dataset, mapeo_relaciones_cruzadas, relacion_dataset_contexto, generar_altmetrics
 from ui.generate_altmetrics import generar_ui_almetrics
+from utils.creacion_embedding import procesar_y_estructurar_indice
 from utils.extract_abstract import extraer_contexto_pdf
 from utils.orcid import buscar_en_orcid_real, actualizar_orcid_ds, actualizar_orcid_seleccionado
 from utils.save_json import guardar_json
@@ -34,7 +35,7 @@ if 'textos_articulos' not in st.session_state:
 st.title("Extracción de Contexto y Enlace Académico")
 st.header("1. Datasets")
 
-archivos_a = st.file_uploader("Sube uno o varios datasets", type=["csv", "xlsx"], key="uploader_a", accept_multiple_files=True)
+archivos_a = st.file_uploader("Sube uno o varios datasets", type=["csv", "xlsx","txt"], key="uploader_a", accept_multiple_files=True)
 
 datasets_dict = {}
 
@@ -44,14 +45,29 @@ if archivos_a:
         if archivo.name.endswith(('.xlsx', '.xls')):
             datasets_dict[archivo.name] = pd.read_excel(archivo)
         else:
+            # --- SECCIÓN ADAPTADA PARA CSV Y TXT ---
             try:
-                datasets_dict[archivo.name] = pd.read_csv(archivo, encoding='utf-8')
-            except UnicodeDecodeError:
+                # Intento 1: Detección automática de separador (ideal para .txt y .csv estándar) en UTF-8
+                datasets_dict[archivo.name] = pd.read_csv(
+                    archivo, 
+                    encoding='utf-8', 
+                    sep=None,          # <--- Detecta automáticamente comas, punto y coma, tabuladores, etc.
+                    engine='python',   # <--- Necesario para que sep=None funcione
+                    on_bad_lines='skip'
+                )
+            except Exception:
                 try:
-                    datasets_dict[archivo.name] = pd.read_csv(archivo, encoding='latin-1')
+                    # Intento 2: Por si el archivo tiene una codificación clásica de Windows (Latin-1)
+                    datasets_dict[archivo.name] = pd.read_csv(
+                        archivo, 
+                        encoding='latin-1', 
+                        sep=None, 
+                        engine='python', 
+                        on_bad_lines='skip'
+                    )
                 except Exception as e:
-                    st.error(f"No se pudo leer el archivo {archivo.name}: {e}")
-
+                    st.error(f"❌ No se pudo leer el archivo {archivo.name}. Verifica que el formato de texto sea válido. Error: {e}")
+                    
     for dataset_name, df in datasets_dict.items():
         if dataset_name not in st.session_state.analisis_datasets:
             with st.spinner(f"Analizando estructura y autores de {dataset_name}..."):
@@ -385,4 +401,6 @@ if datasets_dict or st.session_state.analisis_datasets:
     # 💾 PROCESO DE GUARDADO FÍSICO Y LÓGICA DEL JSON ESTRUCTURADO CON ALTMETRICS
     if st.button("💾 Guardar Todo de Forma Local", type="primary", use_container_width=True):
         guardar_json(datasets_dict, articulos_dict,st)           
-        st.success("🎉 ¡Estructuras guardadas con éxito, incluyendo la sección de Altmetrics en paralelos con bordes!")
+        st.success("🎉 ¡Estructuras guardadas con éxito!")
+        number_source = procesar_y_estructurar_indice()
+        st.success(f"🎉 ¡Adicion al indice {number_source} elementos !")

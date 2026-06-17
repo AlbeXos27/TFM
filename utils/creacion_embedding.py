@@ -178,13 +178,8 @@ def procesar_y_estructurar_indice():
                 ids=batch_ids
             )
             print("✅ Guardado masivo completado con éxito.")
+            return len(batch_ids)
         except Exception as e:
             print(f"❌ Error al insertar datos en ChromaDB: {e}")
     else:
         print("\n☕ No se encontraron nuevos datos contextuales para indexar.")
-
-
-if __name__ == "__main__":
-    print("=== INICIANDO PIPELINE VECTORIAL ENFOCADO EN ANÁLISIS Y CONTEXTO ===")
-    procesar_y_estructurar_indice()
-    print("=== PIPELINE FINALIZADO ===")
