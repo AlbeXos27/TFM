@@ -1,0 +1,9 @@
+{
+    "DATAVERSE_URL": "http://localhost:8080",
+    "API_TOKEN": "43cd9b2f-126f-4f88-b8ab-da3e2f2b909b",
+    "PARENT_COLLECTION": "giiuca",
+    "DIRECTORIO_INVESTIGACIONES": "investigaciones",
+    "ARCHIVO_REGISTRO": "pids.txt",
+    "CONTACT_NAME": "Gestor de Investigación",
+    "CONTACT_EMAIL": "contacto_investigacion@uca.es"
+}

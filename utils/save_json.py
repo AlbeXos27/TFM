@@ -29,9 +29,18 @@ def guardar_json(datasets_dict, articulos_dict,st):
 
             for p_name in config_carpeta.get("pdfs_seleccionados", []):
                 if p_name in articulos_dict:
-                    with open(ruta_final / "articulos" / p_name, "wb") as f:
-                        f.write(articulos_dict[p_name])
-
+                    # Obtenemos los metadatos guardados del artículo
+                    meta_art = st.session_state.metadatos_articulos_editados.get(p_name, {})
+                    # Verificamos si el toggle "subir_archivo" es True (por defecto True si no existe)
+                    debe_guardar_pdf = meta_art.get("subir_archivo", True)
+                    
+                    if debe_guardar_pdf:
+                        with open(ruta_final / "articulos" / p_name, "wb") as f:
+                            f.write(articulos_dict[p_name])
+                    else:
+                        st.info(f"El artículo '{p_name}' no se guardará físicamente por configuración del usuario.")
+                        
+                        
             # Construcción estructural del JSON de salida
             json_salida = {
                 "proyecto_nombre": nombre_carpeta,

@@ -11,7 +11,7 @@ from groq import Groq
 # =========================================================
 # CONFIG STREAMLIT Y CONFIGURACIONES FIJAS
 # =========================================================
-st.set_page_config(page_title="Buscador Científico IA", page_icon="🔬", layout="wide")
+st.set_page_config(page_title="Buscador SIEGMA-LLM", page_icon="🔬", layout="wide")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -60,7 +60,7 @@ def mapear_conceptos_dinamico_con_groq(query_usuario):
         },
         {
             "role": "user",
-            "content": f"""Genera de 5 a 8 términos médicos, científicos o sinónimos relacionados con: "{query_usuario}".
+            "content": f"""Genera de 5 a 8 términos científicos o sinónimos relacionados con: "{query_usuario}".
             
             Debes responder ESTRICTAMENTE con este formato JSON:
             {{"conceptos_relacionados": "termino1, termino2, termino3"}}
@@ -111,7 +111,6 @@ def buscar(query_usuario, top_k=15):
         return [], query_enriquecida, lista_conceptos, error_groq
     
     # 2. FASE ADAPTADA: Evaluamos el re-ranking usando la query_usuario ORIGINAL
-    # Así evitamos penalizar documentos que no tengan los sinónimos exactos de la IA.
     pares = [[query_usuario, doc] for doc in docs]
     inputs = tokenizer_rerank(pares, padding=True, truncation=True, max_length=1024, return_tensors="pt").to(device)
     
@@ -127,10 +126,10 @@ def buscar(query_usuario, top_k=15):
 # =========================================================
 # INTERFAZ DE USUARIO
 # =========================================================
-st.title("Buscador Contextual de Datasets Científicos")
+st.title("Buscador")
 
 with st.sidebar:
-    top_k = st.slider("Candidatos iniciales (Chroma)", 5, 50, 15) # Recomendado subirlo un poco para capturar más sinónimos
+    top_k = st.slider("Candidatos iniciales", 5, 50, 15) # Recomendado subirlo un poco para capturar más sinónimos
     st.caption(f"Filtro Reranker: Score >= {UMBRAL_RERANK_FIJO}")
 
 query = st.text_input("💬 Introduce tu consulta", placeholder="Ej: dataset de salinidad...")
@@ -146,7 +145,7 @@ if st.button("🔍 Buscar en el repositorio", type="primary"):
         if error_api:
             st.error(f"❌ Error al conectar con Groq: `{error_api}`")
         elif conceptos_extra:
-            st.write("### 🧠 Sinónimos usados en la pre-búsqueda (ChromaDB):")
+            st.write("### Sinónimos usados en la pre-búsqueda")
             st.pills("Conceptos detectados", conceptos_extra, disabled=True)
             st.write("---")
         else:

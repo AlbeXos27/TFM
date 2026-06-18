@@ -220,7 +220,7 @@ def generar_altmetrics(ctx_altmetrics_origen, idx, st):
             model=MODELO_LLM,
             messages=[{"role": "user", "content": prompt_altmetrics}],
             response_format={"type": "json_object"},
-            temperature=0.6,
+            temperature=0.35,
         )
 
         # Parseo y almacenamiento del JSON en el estado de Streamlit

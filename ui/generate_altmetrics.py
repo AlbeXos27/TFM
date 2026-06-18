@@ -1,4 +1,4 @@
-def generar_ui_almetrics(st, alt_data, idx):
+def generar_ui_altmetrics(st, alt_data, idx):
     col_fb, col_li, col_x = st.columns(3)
 
     with col_fb:
