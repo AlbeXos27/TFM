@@ -1,4 +1,5 @@
 import json
+import re
 from groq import Groq
 import streamlit as st
 API_KEY_GROQ = st.secrets["API_KEY_GROQ"]
@@ -237,3 +238,119 @@ def generar_altmetrics(ctx_altmetrics_origen, idx, st):
             "post_linkedin": "Error al generar post automático.",
             "comunidad_objetivo": f"Error al procesar objetivos: {e}",
         }
+
+
+def extraer_subjects(contexto, nombre_archivo):
+    """
+    Extrae las áreas temáticas principales (subjects) del contexto usando Groq.
+    Devuelve una lista de subjects válidos para la API de Dataverse.
+    
+    Args:
+        contexto (str): El texto/descripción del documento o dataset
+        nombre_archivo (str): Nombre del archivo para referencia
+    
+    Returns:
+        list: Lista de subjects en inglés compatibles con Dataverse (máximo 5)
+    """
+    prompt_subjects = f"""Analiza el siguiente contexto de investigación y extrae exactamente 3 a 5 áreas temáticas principales.
+    
+CONTEXTO: "{contexto}"
+
+Devuelve ÚNICAMENTE un JSON con este formato, sin explicaciones adicionales:
+{{
+    "subjects": ["Tema 1", "Tema 2", "Tema 3"]
+}}
+
+Los temas pueden estar en español o en inglés. Al final, asigna los subjects a valores compatibles con Dataverse como:
+"Agricultural Sciences", "Arts and Humanities", "Astronomy and Astrophysics", "Business and Management", "Chemistry", "Computer and Information Science", "Earth and Environmental Sciences", "Engineering", "Law", "Mathematical Sciences", "Medicine, Health and Life Sciences", "Physics", "Social Sciences", "Other".
+"""
+    
+    def normalize_text(value):
+        # Asegura la eliminación de comas para normalizaciones complejas
+        return re.sub(r"[^a-z0-9]+", " ", value.lower().strip()) if isinstance(value, str) else ""
+
+    def map_subject(value):
+        if not isinstance(value, str):
+            return None
+        
+        normalized = normalize_text(value)
+        
+        # 1. Diccionario completo con mapeos en español e inglés normalizado
+        mapping = {
+            # Mapeos de traducción del Español
+            "salud": "Medicine, Health and Life Sciences",
+            "medicina": "Medicine, Health and Life Sciences",
+            "ciencias de la vida": "Medicine, Health and Life Sciences",
+            "vida": "Medicine, Health and Life Sciences",
+            "ciencias sociales": "Social Sciences",
+            "ciencias de la tierra": "Earth and Environmental Sciences",
+            "ciencias de la tierra y el medio ambiente": "Earth and Environmental Sciences",
+            "tecnologia": "Computer and Information Science",
+            "tecnología": "Computer and Information Science",
+            "informatica": "Computer and Information Science",
+            "informática": "Computer and Information Science",
+            "ciencias de la computacion": "Computer and Information Science",
+            "ciencias de la computación": "Computer and Information Science",
+            "fisica": "Physics",
+            "física": "Physics",
+            "quimica": "Chemistry",
+            "química": "Chemistry",
+            "ingenieria": "Engineering",
+            "ingeniería": "Engineering",
+            "ley": "Law",
+            "derecho": "Law",
+            "artes": "Arts and Humanities",
+            "humanidades": "Arts and Humanities",
+            "matematicas": "Mathematical Sciences",
+            "matemáticas": "Mathematical Sciences",
+            "agricultura": "Agricultural Sciences",
+            "negocios": "Business and Management",
+            "empresa": "Business and Management",
+
+            # 2. Mapeos estrictos en inglés (para corregir variaciones que devuelva la IA)
+            "agricultural sciences": "Agricultural Sciences",
+            "arts and humanities": "Arts and Humanities",
+            "astronomy and astrophysics": "Astronomy and Astrophysics",
+            "business and management": "Business and Management",
+            "chemistry": "Chemistry",
+            "computer and information science": "Computer and Information Science",
+            "earth and environmental sciences": "Earth and Environmental Sciences",
+            "engineering": "Engineering",
+            "law": "Law",
+            "mathematical sciences": "Mathematical Sciences",
+            "medicine health and life sciences": "Medicine, Health and Life Sciences",
+            "medicine health & life sciences": "Medicine, Health and Life Sciences",
+            "physics": "Physics",
+            "social sciences": "Social Sciences",
+            "other": "Other"
+        }
+        
+        # Retorna el string exacto si existe en el diccionario, de lo contrario None
+        return mapping.get(normalized, None)
+
+    try:
+        respuesta = client.chat.completions.create(
+            model=MODELO_LLM,
+            messages=[{"role": "user", "content": prompt_subjects}],
+            response_format={"type": "json_object"},
+            temperature=0.3
+        )
+        
+        resultado = json.loads(respuesta.choices[0].message.content)
+        subjects_extraidos = resultado.get("subjects", [])
+        
+        subjects_mapeados = []
+        for raw in subjects_extraidos:
+            mapped = map_subject(raw)
+            if mapped and mapped not in subjects_mapeados:
+                subjects_mapeados.append(mapped)
+            if len(subjects_mapeados) >= 5:
+                break
+
+        if subjects_mapeados:
+            return subjects_mapeados
+        return ["Social Sciences"]
+            
+    except Exception as e:
+        print(f"⚠️ Error al extraer subjects: {e}")
+        return ["Social Sciences"]  # Default fallback

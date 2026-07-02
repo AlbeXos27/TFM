@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from easyDataverse import Dataverse
+from client_ia.request_Groq import extraer_subjects
 
 def cargar_configuracion(ruta_config="config.json"):
     """Lee el archivo de configuración JSON desde la misma carpeta del script."""
@@ -47,7 +48,7 @@ def ejecutar_pipeline_dataverse(config):
         return resumen
 
     archivo_registro = config.get("ARCHIVO_REGISTRO", "pids.txt")
-    raiz_coleccion = config.get("PARENT_COLLECTION") # Colección madre (ej: "root")
+    raiz_coleccion = config.get("PARENT_COLLECTION")  # Colección madre (ej: "root" o "giiuca")
     
     # Datos de contacto obligatorios
     contacto_nombre = config.get("CONTACT_NAME", "Gestor de Investigación")
@@ -97,39 +98,55 @@ def ejecutar_pipeline_dataverse(config):
                 continue
 
             # =================================================================
-            # 🚀 ROBUSTO: VERIFICAR Y CREAR DATAVERSE (EVITA EL ERROR 404)
+            # 🚀 ROBUSTO: VERIFICAR Y CREAR DATAVERSE (CORREGIDO PARA NATIVE_API)
             # =================================================================
             print(f"📁 Verificando existencia de la colección dedicada: '{proyecto_alias}'...")
             
             coleccion_existe = False
             try:
-                # Le preguntamos directamente a la API si la colección ya existe
-                dv.native_api.get_dataverse(proyecto_alias)
-                coleccion_existe = True
-                print(f"ℹ️ La colección '{proyecto_alias}' ya existe. Se usará este contenedor.")
+                res = dv.native_api.get_dataverse(proyecto_alias)
+                
+                if isinstance(res, dict) and res.get("status") == "ERROR":
+                    coleccion_existe = False
+                elif hasattr(res, "status_code") and res.status_code == 404:
+                    coleccion_existe = False
+                else:
+                    coleccion_existe = True
+                    print(f"ℹ️ La colección '{proyecto_alias}' ya existe. Se usará este contenedor.")
             except Exception:
-                # Si falla la consulta, asumimos que no existe (404) e intentaremos crearla
                 coleccion_existe = False
 
             if not coleccion_existe:
                 print(f"✨ Creando nueva colección dedicada en '{raiz_coleccion}' con alias '{proyecto_alias}'...")
                 try:
-                    nuevo_dv = dv.create_dataverse(dataverse_name=raiz_coleccion)
-                    nuevo_dv.name = proyecto_nombre
-                    nuevo_dv.alias = proyecto_alias
-                    nuevo_dv.add_dataverse_contact(contact_email=contacto_email, contact_name=contacto_nombre)
-                    nuevo_dv.dataverse_type = "RESEARCH_PROJECT"
+                    # Definimos el payload JSON requerido por la API nativa de Dataverse
+                    dataverse_data = {
+                        "name": proyecto_nombre,
+                        "alias": proyecto_alias,
+                        "dataverseContacts": [
+                            {
+                                "contactEmail": contacto_email
+                            }
+                        ],
+                        "dataverseType": "RESEARCH_PROJECT"
+                    }
                     
-                    # Subimos la estructura de la colección
-                    nuevo_dv.upload()
+                    # Convertimos a string JSON el diccionario estructurado
+                    dataverse_json = json.dumps(dataverse_data)
+                    
+                    # Llamamos directamente a la API nativa adjunta en easyDataverse
+                    dv.native_api.create_dataverse(raiz_coleccion, dataverse_json)
                     print(f"✅ ¡Colección Dataverse '{proyecto_nombre}' creada con éxito!")
+                    
                 except Exception as e_creacion:
-                    print(f"❌ Error real al intentar crear la colección '{proyecto_alias}': {e_creacion}")
-                    print(f"⚠️ Se aborta el proceso de esta carpeta para prevenir fallos en cadena.")
-                    resumen["carpetas_con_error"] += 1
-                    continue
+                    if "already exists" in str(e_creacion).lower():
+                        print(f"ℹ️ El servidor indica que '{proyecto_alias}' ya existe de forma interna. Continuamos.")
+                    else:
+                        print(f"❌ Error real al intentar crear la colección '{proyecto_alias}': {e_creacion}")
+                        print(f"⚠️ Se aborta el proceso de esta carpeta para prevenir fallos en cadena.")
+                        resumen["carpetas_con_error"] += 1
+                        continue
 
-            # Asignamos el alias verificado/creado como destino definitivo
             coleccion_destino = proyecto_alias
 
             # =================================================================
@@ -155,18 +172,30 @@ def ejecutar_pipeline_dataverse(config):
                     dataset.citation.add_ds_description(
                         value=articulo.get("contexto_general", "Sin descripción.")
                     )
-                    dataset.citation.subject = ["Social Sciences"]
+                    # Extraer subjects del contexto usando Groq
+                    contexto_para_subjects = articulo.get("contexto_general", articulo.get("contexto_unico", "Sin descripción"))
+                    subjects_extraidos = extraer_subjects(contexto_para_subjects, titulo_dataset)
+                    dataset.citation.subject = subjects_extraidos
 
-                    # Autores
-                    primer_autor = "Investigador Principal"
+                    # --- CONTROL DE AUTORES REFORZADO ---
+                    autores_agregados = 0
                     autores = articulo.get("autores", [])
                     if isinstance(autores, list):
                         for i, autor_data in enumerate(autores):
                             nombre = autor_data.get("nombre")
                             orcid = autor_data.get("orcid", "").strip()
                             if nombre:
-                                if i == 0: primer_autor = nombre
-                                dataset.citation.add_author(name=nombre, identifier_scheme="ORCID" if orcid else None, identifier=orcid if orcid else None)
+                                dataset.citation.add_author(
+                                    name=nombre, 
+                                    identifier_scheme="ORCID" if orcid else None, 
+                                    identifier=orcid if orcid else None
+                                )
+                                autores_agregados += 1
+                    
+                    if autores_agregados == 0:
+                        print(f"⚠️ Campo 'authorName' ausente o vacío en el JSON. Asignando autor por defecto.")
+                        dataset.citation.add_author(name=contacto_nombre)
+                    # ------------------------------------
                     
                     # Vincular Archivo PDF del artículo
                     pdf_nombre = articulo.get("nombre_articulo")
@@ -221,8 +250,11 @@ def ejecutar_pipeline_dataverse(config):
                         descripcion_ds = ds.get("explicacion_estructura", "Conjunto de datos de investigación.")
                     
                     dataset.citation.add_ds_description(value=descripcion_ds)
-                    dataset.citation.subject = ["Social Sciences"]
-                    dataset.citation.add_author(name="Gestor de Investigación")
+                    # Extraer subjects del contexto usando Groq
+                    subjects_extraidos = extraer_subjects(descripcion_ds, titulo_dataset)
+                    dataset.citation.subject = subjects_extraidos
+                    
+                    dataset.citation.add_author(name=contacto_nombre)
                     
                     if archivo_nombre:
                         ruta_fichero_datos = ruta_carpeta / archivo_nombre
@@ -251,3 +283,13 @@ def ejecutar_pipeline_dataverse(config):
 
     print("\n🏁 Pipeline masivo finalizado.")
     return resumen
+
+
+if __name__ == "__main__":
+    try:
+        configuracion = cargar_configuracion()
+        resultado = ejecutar_pipeline_dataverse(configuracion)
+        print("\n📊 RESUMEN DE LA OPERACIÓN:")
+        print(json.dumps(resultado, indent=4, ensure_ascii=False))
+    except Exception as e:
+        print(f"💥 Error al ejecutar el script: {e}")

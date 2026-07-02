@@ -1,12 +1,14 @@
-import os
 import json
+import math
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
 import chromadb
 import torch
 import streamlit as st
-
+from groq import Groq
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from groq import Groq 
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 # =========================================================
 # CONFIG STREAMLIT Y CONFIGURACIONES FIJAS
@@ -15,7 +17,11 @@ st.set_page_config(page_title="Buscador SIEGMA-LLM", page_icon="🔬", layout="w
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-UMBRAL_RERANK_FIJO = -2.0 
+UMBRAL_RERANK_FIJO = -2.0
+ALPHA_BASE = 0.7
+BETA_EXP = 0.3
+BOOST_POR_CONCEPTO = 0.25
+MAX_CONCEPTS = 5
 API_KEY_GROQ = st.secrets["API_KEY_GROQ"]
 MODELO_LLM = st.secrets["MODELO_LLM"]
 
@@ -52,76 +58,186 @@ with st.spinner("⏳ Cargando modelos IA en memoria..."):
 # =========================================================
 # MAPEO DINÁMICO CON GROQ
 # =========================================================
-def mapear_conceptos_dinamico_con_groq(query_usuario):
+def _normalize_text(text: str) -> str:
+    return " ".join(text.lower().strip().split())
+
+
+def _clean_conceptos(conceptos_raw: str, query_usuario: str) -> List[str]:
+    criterios = []
+    for item in conceptos_raw.split(","):
+        concepto = item.strip()
+        if not concepto:
+            continue
+        if len(concepto) < 3:
+            continue
+        if concepto.lower() == query_usuario.lower().strip():
+            continue
+        criterios.append(concepto)
+    unique = []
+    seen = set()
+    for concepto in criterios:
+        key = _normalize_text(concepto)
+        if key not in seen:
+            seen.add(key)
+            unique.append(concepto)
+        if len(unique) >= MAX_CONCEPTS:
+            break
+    return unique
+
+
+def mapear_conceptos_dinamico_con_groq(query_usuario: str) -> Tuple[List[str], Optional[str]]:
     messages = [
         {
             "role": "system",
-            "content": "Eres un backend de IA que SOLO devuelve JSON. Tu única tarea es devolver palabras clave científicas relacionadas en español."
+            "content": (
+                "Eres un backend de IA que SOLO devuelve JSON. "
+                "Tu única tarea es devolver palabras clave científicas relacionadas en español."
+            ),
         },
         {
             "role": "user",
-            "content": f"""Genera de 5 a 8 términos científicos o sinónimos relacionados con: "{query_usuario}".
-            
-            Debes responder ESTRICTAMENTE con este formato JSON:
-            {{"conceptos_relacionados": "termino1, termino2, termino3"}}
-            
-            No incluyas introducciones ni explicaciones."""
-        }
+            "content": (
+                f"Genera de 3 a 5 términos científicos o sinónimos relacionados con: \"{query_usuario}\". "
+                "Debes responder ESTRICTAMENTE con este formato JSON: "
+                "{\"conceptos_relacionados\": \"termino1, termino2, termino3\"}. "
+                "No incluyas introducciones ni explicaciones."
+            ),
+        },
     ]
+
     try:
         completion = client_groq.chat.completions.create(
-            model=MODELO_LLM, 
+            model=MODELO_LLM,
             messages=messages,
-            temperature=0.1, 
+            temperature=0.1,
             response_format={"type": "json_object"},
-            max_tokens=100
+            max_tokens=100,
         )
-        
         texto_respuesta = completion.choices[0].message.content
         datos_json = json.loads(texto_respuesta)
         conceptos = datos_json.get("conceptos_relacionados", "")
-        
-        lista_conceptos = [c.strip() for c in conceptos.split(",") if c.strip()]
-        
-        if lista_conceptos and "".join(lista_conceptos).lower() != query_usuario.lower().strip():
-            return lista_conceptos, None
-        return [], None
+        lista_conceptos = _clean_conceptos(conceptos, query_usuario)
+        return lista_conceptos, None
     except Exception as e:
         return [], str(e)
 
 # =========================================================
 # LÓGICA DE BÚSQUEDA ADAPTADA (Filtro Híbrido Avanzado)
 # =========================================================
+def _score_combined(base_score: float, exp_score: float) -> float:
+    return ALPHA_BASE * base_score + BETA_EXP * exp_score
+
+
+def _merge_results(
+    base_results: Dict[str, Dict[str, Any]],
+    exp_results_list: List[Dict[str, Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for doc_id, item in base_results.items():
+        merged[doc_id] = {
+            "id": doc_id,
+            "document": item["document"],
+            "metadata": item["metadata"],
+            "score_base": item["score"],
+            "score_exp": 0.0,
+            "concept_hits": 0,
+        }
+
+    for exp_results in exp_results_list:
+        for doc_id, item in exp_results.items():
+            if doc_id not in merged:
+                merged[doc_id] = {
+                    "id": doc_id,
+                    "document": item["document"],
+                    "metadata": item["metadata"],
+                    "score_base": 0.0,
+                    "score_exp": 0.0,
+                    "concept_hits": 0,
+                }
+            merged[doc_id]["score_exp"] += item["score"]
+            merged[doc_id]["concept_hits"] += 1
+
+    combined = []
+    for item in merged.values():
+        if item["concept_hits"] > 0:
+            item["score_exp"] /= item["concept_hits"]
+        item["score_final"] = _score_combined(item["score_base"], item["score_exp"])
+        item["score_final"] += item["concept_hits"] * BOOST_POR_CONCEPTO
+        combined.append(item)
+
+    return sorted(combined, key=lambda x: x["score_final"], reverse=True)
+
+
+def _collect_chroma_results(chroma_response: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    documents = chroma_response.get("documents", [[]])[0]
+    ids = chroma_response.get("ids", [[]])[0]
+    metadatas = chroma_response.get("metadatas", [[]])[0]
+    distances = chroma_response.get("distances", [[]])[0]
+
+    results = {}
+    for idx, doc_id in enumerate(ids):
+        results[doc_id] = {
+            "document": documents[idx],
+            "metadata": metadatas[idx],
+            "score": 1.0 - distances[idx] if distances else 0.0,
+        }
+    return results
+
+
+def _query_concept_embeddings(conceptos: List[str], top_k: int) -> List[Dict[str, Dict[str, Any]]]:
+    results = []
+    for concepto in conceptos:
+        embedding_concepto = embedding_model.encode(concepto, normalize_embeddings=True, convert_to_numpy=True)
+        resultado_concepto = collection.query(
+            query_embeddings=[embedding_concepto.tolist()],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        results.append(_collect_chroma_results(resultado_concepto))
+    return results
+
+
 def buscar(query_usuario, top_k=15):
     lista_conceptos, error_groq = mapear_conceptos_dinamico_con_groq(query_usuario)
-    
-    # 1. Creamos la query enriquecida SOLO para la primera fase (ChromaDB)
+    embedding_query = embedding_model.encode(query_usuario, normalize_embeddings=True, convert_to_numpy=True)
+
+    # búsqueda base con la query original
+    resultado_base = collection.query(
+        query_embeddings=[embedding_query.tolist()],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
+    )
+    base_results = _collect_chroma_results(resultado_base)
+
+    # búsquedas separadas para cada concepto generado
+    exp_results_list: List[Dict[str, Dict[str, Any]]] = []
     if lista_conceptos:
-        conceptos_str = " ".join(lista_conceptos)
-        query_enriquecida = f"{query_usuario} {conceptos_str}"
-    else:
-        query_enriquecida = query_usuario
-    
-    # Búsqueda en ChromaDB con el espectro ampliado
-    query_embedding = embedding_model.encode(query_enriquecida, normalize_embeddings=True, convert_to_numpy=True).tolist()
-    resultado_chroma = collection.query(query_embeddings=[query_embedding], n_results=top_k)
-    
-    docs = resultado_chroma["documents"][0]
-    if not docs: 
-        return [], query_enriquecida, lista_conceptos, error_groq
-    
-    # 2. FASE ADAPTADA: Evaluamos el re-ranking usando la query_usuario ORIGINAL
-    pares = [[query_usuario, doc] for doc in docs]
+        exp_results_list = _query_concept_embeddings(lista_conceptos, top_k)
+
+    if not base_results and not exp_results_list:
+        return [], query_usuario, lista_conceptos, error_groq
+
+    combined_results = _merge_results(base_results, exp_results_list)
+    final_candidates = []
+    for doc in combined_results[:top_k]:
+        final_candidates.append((doc["id"], doc["document"], doc["metadata"], doc["score_final"]))
+
+    # reranking sobre el top combinado
+    documentos = [item[1] for item in final_candidates]
+    ids = [item[0] for item in final_candidates]
+    metadatas = [item[2] for item in final_candidates]
+    pares = [[query_usuario, documento] for documento in documentos]
     inputs = tokenizer_rerank(pares, padding=True, truncation=True, max_length=1024, return_tensors="pt").to(device)
-    
+
     with torch.no_grad():
         scores = model_rerank(**inputs).logits.view(-1).float().cpu().tolist()
-    
-    resultados_filtrados = [
-        (resultado_chroma["ids"][0][i], docs[i], resultado_chroma["metadatas"][0][i], scores[i])
-        for i, score in enumerate(scores) if score >= UMBRAL_RERANK_FIJO
+
+    reranked = [
+        (ids[i], documentos[i], metadatas[i], scores[i])
+        for i, score in enumerate(scores)
+        if score >= UMBRAL_RERANK_FIJO
     ]
-    return sorted(resultados_filtrados, key=lambda x: x[3], reverse=True), query_enriquecida, lista_conceptos, error_groq
+    return sorted(reranked, key=lambda x: x[3], reverse=True), query_usuario, lista_conceptos, error_groq
 
 # =========================================================
 # INTERFAZ DE USUARIO
@@ -129,7 +245,7 @@ def buscar(query_usuario, top_k=15):
 st.title("Buscador")
 
 with st.sidebar:
-    top_k = st.slider("Candidatos iniciales", 5, 50, 15) # Recomendado subirlo un poco para capturar más sinónimos
+    top_k = st.slider("Candidatos iniciales", 5, 50, 10) # Recomendado subirlo un poco para capturar más sinónimos
     st.caption(f"Filtro Reranker: Score >= {UMBRAL_RERANK_FIJO}")
 
 query = st.text_input("💬 Introduce tu consulta", placeholder="Ej: dataset de salinidad...")

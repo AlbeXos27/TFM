@@ -18,16 +18,19 @@ if 'metadatos_datasets_editados' not in st.session_state:
     st.session_state.metadatos_datasets_editados = {}
 if 'textos_articulos' not in st.session_state:
     st.session_state.textos_articulos = {}
-
+if 'datasets_dict' not in st.session_state:
+    st.session_state.datasets_dict = {}
+if 'articulos_dict' not in st.session_state:
+    st.session_state.articulos_dict = {}
 
 st.title("Extracción de Contexto y Enlace Académico")
 st.header("1. Datasets")
 
-datasets_dict = {}
+datasets_dict = st.session_state.datasets_dict
 ui_upload_datasets(datasets_dict, st)
 
 st.header("2. Artículos")
-articulos_dict = {}
+articulos_dict = st.session_state.articulos_dict
 ui_upload_articles(articulos_dict, st)
 
 if datasets_dict or st.session_state.analisis_datasets:

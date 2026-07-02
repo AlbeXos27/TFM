@@ -18,7 +18,12 @@ def ui_upload_datasets(datasets_dict, st):
             accept_multiple_files=True
         )
         if archivos_subidos:
-            archivos_a.extend(archivos_subidos)
+            archivos_a.extend([archivo for archivo in archivos_subidos if archivo.name not in datasets_dict])
+            nuevos = [archivo for archivo in archivos_subidos if archivo.name not in datasets_dict]
+            if nuevos:
+                st.success(f"¡{len(nuevos)} dataset(s) cargado(s) con éxito!")
+            else:
+                st.info("Los datasets seleccionados ya están cargados.")
 
     with tab2:
         url_input = st.text_input(
@@ -33,8 +38,9 @@ def ui_upload_datasets(datasets_dict, st):
             if not nombre_sugerido.endswith(('.csv', '.xlsx', '.xls', '.txt')):
                 nombre_sugerido = "dataset_url.csv" # Nombre por defecto si la URL es genérica
             
-            # Evitamos descargar repetidamente en cada renderizado usando cache o session_state si ya existe
-            if nombre_sugerido not in datasets_dict:
+            if nombre_sugerido in datasets_dict:
+                st.info("El dataset de la URL ya está cargado.")
+            else:
                 try:
                     with st.spinner("Descargando archivo desde la URL..."):
                         response = requests.get(url_input, timeout=15)
@@ -44,58 +50,56 @@ def ui_upload_datasets(datasets_dict, st):
                         archivo_url = BytesIO(response.content)
                         archivo_url.name = nombre_sugerido
                         archivos_a.append(archivo_url)
+                        st.success(f"¡Dataset '{nombre_sugerido}' cargado con éxito desde URL!")
                 except Exception as e:
                     st.error(f"❌ Error al descargar el archivo desde la URL: {e}")
 
-    # --- PROCESAMIENTO DE ARCHIVOS (Igual para local o URL) ---
-    if archivos_a:
-        # Nota: Como ahora puede haber mezclas, controlamos mensajes de éxito por separado o globales
-        # Para mantener tu flujo, procesamos cada archivo de la lista 'archivos_a'
-        for archivo in archivos_a:
-            # Evitar reprocesar si ya está cargado en esta ejecución
-            if archivo.name in datasets_dict:
-                continue
-                
-            if archivo.name.endswith(('.xlsx', '.xls')):
+    # Para mantener tu flujo, procesamos cada archivo de la lista 'archivos_a'
+    for archivo in archivos_a:
+        # Evitar reprocesar si ya está cargado en esta ejecución
+        if archivo.name in datasets_dict:
+            continue
+            
+        if archivo.name.endswith(('.xlsx', '.xls')):
+            try:
+                datasets_dict[archivo.name] = pd.read_excel(archivo)
+                st.toast(f"¡{archivo.name} cargado con éxito desde Excel!")
+            except Exception as e:
+                st.error(f"❌ Error al leer Excel {archivo.name}: {e}")
+        else:
+            try:
+                # Intento 1: Detección automática en UTF-8
+                datasets_dict[archivo.name] = pd.read_csv(
+                    archivo, 
+                    encoding='utf-8', 
+                    sep=None,          
+                    engine='python',   
+                    on_bad_lines='skip'
+                )
+                st.toast(f"¡{archivo.name} cargado con éxito!")
+            except Exception:
                 try:
-                    datasets_dict[archivo.name] = pd.read_excel(archivo)
-                    st.toast(f"¡{archivo.name} cargado con éxito desde Excel!")
-                except Exception as e:
-                    st.error(f"❌ Error al leer Excel {archivo.name}: {e}")
-            else:
-                try:
-                    # Intento 1: Detección automática en UTF-8
+                    # Si es un objeto BytesIO (de la URL), hay que resetear el puntero para volver a leerlo
+                    if hasattr(archivo, 'seek'):
+                        archivo.seek(0)
+                        
+                    # Intento 2: Codificación Latin-1
                     datasets_dict[archivo.name] = pd.read_csv(
                         archivo, 
-                        encoding='utf-8', 
-                        sep=None,          
-                        engine='python',   
+                        encoding='latin-1', 
+                        sep=None, 
+                        engine='python', 
                         on_bad_lines='skip'
                     )
-                    st.toast(f"¡{archivo.name} cargado con éxito!")
-                except Exception:
-                    try:
-                        # Si es un objeto BytesIO (de la URL), hay que resetear el puntero para volver a leerlo
-                        if hasattr(archivo, 'seek'):
-                            archivo.seek(0)
-                            
-                        # Intento 2: Codificación Latin-1
-                        datasets_dict[archivo.name] = pd.read_csv(
-                            archivo, 
-                            encoding='latin-1', 
-                            sep=None, 
-                            engine='python', 
-                            on_bad_lines='skip'
-                        )
-                        st.toast(f"¡{archivo.name} cargado con éxito (Latin-1)!")
-                    except Exception as e:
-                        st.error(f"❌ No se pudo leer el archivo {archivo.name}. Verifica que el formato de texto sea válido. Error: {e}")
+                    st.toast(f"¡{archivo.name} cargado con éxito (Latin-1)!")
+                except Exception as e:
+                    st.error(f"❌ No se pudo leer el archivo {archivo.name}. Verifica que el formato de texto sea válido. Error: {e}")
                         
-        # --- BLOQUE DE ANÁLISIS Y GESTIÓN (Tu código original permanece intacto) ---
-        for dataset_name, df in datasets_dict.items():
-            if dataset_name not in st.session_state.analisis_datasets:
-                with st.spinner(f"Analizando estructura y autores de {dataset_name}..."):
-                    generar_contexto_dataset(df, dataset_name, st)
+    # --- BLOQUE DE ANÁLISIS Y GESTIÓN (Tu código original permanece intacto) ---
+    for dataset_name, df in datasets_dict.items():
+        if dataset_name not in st.session_state.analisis_datasets:
+            with st.spinner(f"Analizando estructura y autores de {dataset_name}..."):
+                generar_contexto_dataset(df, dataset_name, st)
         
         if st.session_state.analisis_datasets:
             st.markdown("---")

@@ -9,10 +9,14 @@ def ui_upload_articles(articulos_dict, st):
 
 
     if archivos_b:
-        st.success(f"¡{len(archivos_b)} artículo(s) PDF cargado(s) con éxito!")
-        for archivo in archivos_b:
-            extraer_contexto_pdf(archivo, articulos_dict, st)
-            
+        nuevos = [archivo for archivo in archivos_b if archivo.name not in articulos_dict]
+        if nuevos:
+            st.success(f"¡{len(nuevos)} artículo(s) PDF cargado(s) con éxito!")
+            for archivo in nuevos:
+                extraer_contexto_pdf(archivo, articulos_dict, st)
+        elif archivos_b:
+            st.info("Los artículos seleccionados ya están cargados.")
+        
         articulo_visualizar = st.selectbox("Selecciona un Artículo para gestionar sus metadatos y autores:", list(articulos_dict.keys()))
         
         if articulo_visualizar:
@@ -57,7 +61,7 @@ def ui_upload_articles(articulos_dict, st):
 
             st.markdown("#### 👥 Autores Definitivos Configurados")
             
-            if "autores_finales_seleccionados" not in datos_actuales or not datos_actuales["autores_finales_seleccionados"]:
+            if "autores_finales_seleccionados" not in datos_actuales:
                 lista_unificada = list(set(autores_pdf + autores_ia))
                 datos_actuales["autores_finales_seleccionados"] = [a for a in lista_unificada if a]
 
