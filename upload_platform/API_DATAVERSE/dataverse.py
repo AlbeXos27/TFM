@@ -5,6 +5,19 @@ from pathlib import Path
 from easyDataverse import Dataverse
 from client_ia.request_Groq import extraer_subjects
 
+def buscar_archivo_en_carpeta(ruta_carpeta, nombre_archivo, subcarpetas=None):
+    """Busca un archivo dentro de la carpeta raíz o en subcarpetas conocidas."""
+    rutas_a_buscar = [ruta_carpeta]
+    if subcarpetas:
+        rutas_a_buscar.extend(ruta_carpeta / sub for sub in subcarpetas)
+
+    for base in rutas_a_buscar:
+        ruta_candidato = base / nombre_archivo
+        if ruta_candidato.exists():
+            return ruta_candidato
+    return None
+
+
 def cargar_configuracion(ruta_config="config.json"):
     """Lee el archivo de configuración JSON desde la misma carpeta del script."""
     directorio_actual = os.path.dirname(os.path.abspath(__file__))
@@ -200,10 +213,12 @@ def ejecutar_pipeline_dataverse(config):
                     # Vincular Archivo PDF del artículo
                     pdf_nombre = articulo.get("nombre_articulo")
                     if pdf_nombre:
-                        fichero_pdf = ruta_carpeta / pdf_nombre
-                        if fichero_pdf.exists():
+                        fichero_pdf = buscar_archivo_en_carpeta(ruta_carpeta, pdf_nombre, subcarpetas=["articulos"])
+                        if fichero_pdf is not None:
                             dataset.add_file(local_path=str(fichero_pdf), description=f"Documento académico original: {pdf_nombre}")
                             print(f"   ✓ PDF vinculado: {pdf_nombre}")
+                        else:
+                            print(f"   ⚠️ PDF no encontrado: {pdf_nombre}")
 
                     # Vincular Datasets adjuntos
                     relaciones = articulo.get("relaciones_datasets", [])
@@ -213,10 +228,12 @@ def ejecutar_pipeline_dataverse(config):
                         for ds in datasets_globales:
                             archivo_nombre = ds.get("nombre_dataset")
                             if archivo_nombre in nombres_relacionados:
-                                ruta_fichero_datos = ruta_carpeta / archivo_nombre
-                                if ruta_fichero_datos.exists():
+                                ruta_fichero_datos = buscar_archivo_en_carpeta(ruta_carpeta, archivo_nombre, subcarpetas=["datasets"])
+                                if ruta_fichero_datos is not None:
                                     dataset.add_file(local_path=str(ruta_fichero_datos), description=ds.get("explicacion_estructura", "Archivo de datos."))
                                     print(f"   ✓ Dataset vinculado: {archivo_nombre}")
+                                else:
+                                    print(f"   ⚠️ Dataset no encontrado: {archivo_nombre}")
 
                     print(f"📤 Transmitiendo datos hacia la colección '{coleccion_destino}'...")
                     dataset_pid = dataset.upload(dataverse_name=coleccion_destino)
@@ -232,7 +249,7 @@ def ejecutar_pipeline_dataverse(config):
             elif datasets_globales:
                 for idx, ds in enumerate(datasets_globales, start=1):
                     archivo_nombre = ds.get("nombre_dataset", "")
-                    titulo_dataset = f"Dataset: {archivo_nombre}" if archivo_nombre else f"Dataset Independiente {proyecto_nombre} - {idx}"
+                    titulo_dataset = f"{archivo_nombre}" if archivo_nombre else f"Dataset Independiente {proyecto_nombre} - {idx}"
 
                     print(f"\n📊 [Dataset Independiente {idx}/{len(datasets_globales)}] Evaluando: '{titulo_dataset}'")
 
@@ -257,15 +274,15 @@ def ejecutar_pipeline_dataverse(config):
                     dataset.citation.add_author(name=contacto_nombre)
                     
                     if archivo_nombre:
-                        ruta_fichero_datos = ruta_carpeta / archivo_nombre
-                        if ruta_fichero_datos.exists():
+                        ruta_fichero_datos = buscar_archivo_en_carpeta(ruta_carpeta, archivo_nombre, subcarpetas=["datasets"])
+                        if ruta_fichero_datos is not None:
                             dataset.add_file(
                                 local_path=str(ruta_fichero_datos),
                                 description=ds.get("explicacion_estructura", "Archivo de datos de investigación.")
                             )
                             print(f"   ✓ Archivo de datos vinculado: {archivo_nombre}")
                         else:
-                            print(f"   ⚠️ Archivo físico '{archivo_nombre}' no encontrado en la carpeta.")
+                            print(f"   ⚠️ Archivo físico '{archivo_nombre}' no encontrado en la carpeta o subcarpetas esperadas.")
 
                     print(f"📤 Transmitiendo datos hacia la colección '{coleccion_destino}'...")
                     dataset_pid = dataset.upload(dataverse_name=coleccion_destino)
@@ -283,13 +300,3 @@ def ejecutar_pipeline_dataverse(config):
 
     print("\n🏁 Pipeline masivo finalizado.")
     return resumen
-
-
-if __name__ == "__main__":
-    try:
-        configuracion = cargar_configuracion()
-        resultado = ejecutar_pipeline_dataverse(configuracion)
-        print("\n📊 RESUMEN DE LA OPERACIÓN:")
-        print(json.dumps(resultado, indent=4, ensure_ascii=False))
-    except Exception as e:
-        print(f"💥 Error al ejecutar el script: {e}")

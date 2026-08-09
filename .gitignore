@@ -137,6 +137,9 @@ env.bak/
 venv.bak/
 chroma_db/
 investigaciones/
+test/datasets*
+test/datasets
+test/*.png
 
 # Spyder project settings
 .spyderproject
