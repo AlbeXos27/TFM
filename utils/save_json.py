@@ -1,6 +1,69 @@
 from pathlib import Path
+import hashlib
 import json
 import pandas as pd
+
+from utils.licencias import LICENCIA_POR_DEFECTO
+
+
+def _formatear_analisis_dataset(analisis):
+    """Convierte el dict de análisis generado por el LLM (proposito_general,
+    explicacion_campos, posibles_uso, palabras_clave) en un texto legible."""
+    if not analisis:
+        return ""
+    if isinstance(analisis, str):
+        return analisis.strip()
+
+    partes = []
+
+    proposito = analisis.get("proposito_general", "")
+    if proposito:
+        partes.append(proposito.strip())
+
+    campos = analisis.get("explicacion_campos", "")
+    if isinstance(campos, list):
+        for campo in campos:
+            nombre = campo.get("campo", "")
+            tipo = campo.get("tipo_dato", "")
+            explicacion = campo.get("explicacion", "")
+            partes.append(f"{nombre} ({tipo}): {explicacion}")
+    elif isinstance(campos, str) and campos.strip():
+        partes.append(campos.strip())
+
+    posibles_uso = analisis.get("posibles_uso", [])
+    if posibles_uso:
+        partes.append("Posibles usos: " + ", ".join(posibles_uso))
+
+    palabras_clave = analisis.get("palabras_clave", [])
+    if palabras_clave:
+        partes.append("Palabras clave: " + ", ".join(palabras_clave))
+
+    return "\n".join(partes)
+
+
+def _calcular_hash_sha256(json_salida):
+    """Calcula el SHA-256 del contenido de metadatos.json (contenido generado,
+    no incluye el propio campo de hash) para certificar su integridad."""
+    contenido_canonico = json.dumps(json_salida, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(contenido_canonico.encode("utf-8")).hexdigest()
+
+
+def _cargar_info_certificacion_ia():
+    """Recupera qué modelos IAG (Ollama) se usaron para generar el contenido,
+    a partir de config.json, para dejar constancia de autoría del hallazgo."""
+    try:
+        with open("./config.json", "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+    except Exception as e:
+        print(f"No se pudo cargar el archivo de configuración: {e}")
+        config = {}
+
+    return {
+        "modelo_dataset": config.get("modelo_dataset", ""),
+        "modelo_articulo": config.get("modelo_articulo", ""),
+        "fecha_generacion": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")),
+    }
+
 
 def guardar_json(datasets_dict, articulos_dict,st):
     
@@ -21,16 +84,17 @@ def guardar_json(datasets_dict, articulos_dict,st):
 
             for d_name in config_carpeta.get("datasets_seleccionados", []):
                 if d_name in datasets_dict:
-                    df = datasets_dict[d_name]
-                    df.to_csv(
-                        ruta_final / "datasets" / d_name, index=False) if d_name.endswith(".csv") else df.to_excel(
-                        ruta_final / "datasets" / d_name, index=False
-                    )
+                    archivo = datasets_dict[d_name]
+                    if hasattr(archivo, "seek"):
+                        archivo.seek(0)
+                    with open(ruta_final / "datasets" / d_name, "wb") as f:
+                        f.write(archivo.getbuffer())
 
             for p_name in config_carpeta.get("pdfs_seleccionados", []):
                 if p_name in articulos_dict:
                     # Obtenemos los metadatos guardados del artículo
                     meta_art = st.session_state.metadatos_articulos_editados.get(p_name, {})
+                    print(f"Metadatos del artículo '{p_name}': {list(meta_art.keys())}")
                     # Verificamos si el toggle "subir_archivo" es True (por defecto True si no existe)
                     debe_guardar_pdf = meta_art.get("subir_archivo", True)
                     
@@ -48,6 +112,7 @@ def guardar_json(datasets_dict, articulos_dict,st):
                 "articulos": [],
                 "datasets": [],
                 "estrategia_altmetrics": config_carpeta.get("altmetrics", {}),
+                "certificacion_ia": _cargar_info_certificacion_ia(),
             }
 
             relaciones = config_carpeta.get("relaciones_cruzadas", {})
@@ -77,8 +142,10 @@ def guardar_json(datasets_dict, articulos_dict,st):
 
                     estructura_articulo = {
                         "nombre_articulo": p_name,
-                        "titulo_documento": meta_art.get("titulo", p_name),
+                        "titulo_documento": meta_art.get("title", p_name),
                         "contexto_general": meta_art.get("contexto_unico", "").strip(),
+                        "licencia": meta_art.get("licencia", LICENCIA_POR_DEFECTO),
+                        "doi": meta_art.get("doi", "").strip(),
                         "autores": autores_art_json,
                         "relaciones_datasets": [],
                     }
@@ -119,7 +186,9 @@ def guardar_json(datasets_dict, articulos_dict,st):
                     ]
                 )
 
-                analisis_estructural = st.session_state.analisis_datasets.get(d_name, "").strip()
+                analisis_estructural = _formatear_analisis_dataset(
+                    st.session_state.analisis_datasets.get(d_name, {})
+                )
                 contexto_manual = st.session_state.contextos_datasets.get(d_name, "").strip()
 
                 relacion_aislada = ""
@@ -138,9 +207,12 @@ def guardar_json(datasets_dict, articulos_dict,st):
                         "analisis_contextual": (
                             relacion_aislada if relacion_aislada else ""
                         ),
+                        "licencia": meta_ds.get("licencia", LICENCIA_POR_DEFECTO),
                         "autores": autores_ds_json,
                     }
                 )
+
+            json_salida["hash_integridad_sha256"] = _calcular_hash_sha256(json_salida)
 
             json_string = json.dumps(json_salida, indent=4, ensure_ascii=False)
             (ruta_final / "metadatos.json").write_text(json_string, encoding="utf-8")

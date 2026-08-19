@@ -4,9 +4,9 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
+import ollama
 import torch
 import streamlit as st
-from groq import Groq
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -14,32 +14,27 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 # CONFIG STREAMLIT Y CONFIGURACIONES FIJAS
 # =========================================================
 st.set_page_config(page_title="Buscador SIEGMA-LLM", page_icon="🔬", layout="wide")
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
+device = "cpu"
 UMBRAL_RERANK_FIJO = -2.0
 ALPHA_BASE = 0.7
 BETA_EXP = 0.3
 BOOST_POR_CONCEPTO = 0.25
-MAX_CONCEPTS = 5
-API_KEY_GROQ = st.secrets["API_KEY_GROQ"]
-MODELO_LLM = st.secrets["MODELO_LLM"]
-
-client_groq = Groq(api_key=API_KEY_GROQ)
+MAX_CONCEPTS = 6
+MODELO_LLM = "qwen3.5:4b"
 
 # =========================================================
 # CARGA PERSISTENTE DE MODELOS
 # =========================================================
 @st.cache_resource
 def cargar_embedding_model():
-    return SentenceTransformer("BAAI/bge-m3", device=device)
+    return SentenceTransformer("BAAI/bge-m3", device="cpu")
 
 @st.cache_resource
 def cargar_reranker():
     modelo_reranker_name = "BAAI/bge-reranker-v2-m3"
     tokenizer = AutoTokenizer.from_pretrained(modelo_reranker_name)
     model = AutoModelForSequenceClassification.from_pretrained(modelo_reranker_name)
-    model.to(device).eval()
+    model.to("cpu").eval()
     return tokenizer, model
 
 @st.cache_resource
@@ -91,29 +86,39 @@ def mapear_conceptos_dinamico_con_groq(query_usuario: str) -> Tuple[List[str], O
             "role": "system",
             "content": (
                 "Eres un backend de IA que SOLO devuelve JSON. "
-                "Tu única tarea es devolver palabras clave científicas relacionadas en español."
+                "Tu única tarea es expandir una consulta de búsqueda científica en "
+                "términos que maximicen el recall semántico contra un índice de "
+                "datasets y artículos de investigación."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Genera de 3 a 5 términos científicos o sinónimos relacionados con: \"{query_usuario}\". "
+                f"Consulta del usuario: \"{query_usuario}\". "
+                "Genera de 4 a 6 términos de búsqueda relacionados combinando estas tres categorías "
+                "(no los etiquetes, solo devuélvelos mezclados en la lista):\n"
+                "1. Sinónimos o variantes en español del concepto principal.\n"
+                "2. Equivalentes técnicos en inglés (la literatura científica suele usar terminología "
+                "en inglés aunque la consulta esté en español).\n"
+                "3. Sub-conceptos que descompongan la consulta en sus partes clave: la variable o "
+                "fenómeno medido, el método o técnica implicado, y el contexto o dominio de aplicación.\n"
+                "Sé específico y evita términos genéricos que ya estén implícitos en la consulta original. "
                 "Debes responder ESTRICTAMENTE con este formato JSON: "
-                "{\"conceptos_relacionados\": \"termino1, termino2, termino3\"}. "
-                "No incluyas introducciones ni explicaciones."
+                "{\"conceptos_relacionados\": \"termino1, termino2, termino3, termino4\"}. "
+                "No incluyas introducciones, explicaciones ni etiquetas de categoría."
             ),
         },
     ]
 
     try:
-        completion = client_groq.chat.completions.create(
+        completion = ollama.chat(
             model=MODELO_LLM,
             messages=messages,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            max_tokens=100,
+            format="json",
+            options={"temperature": 0.1},
+            think=False,
         )
-        texto_respuesta = completion.choices[0].message.content
+        texto_respuesta = completion["message"]["content"]
         datos_json = json.loads(texto_respuesta)
         conceptos = datos_json.get("conceptos_relacionados", "")
         lista_conceptos = _clean_conceptos(conceptos, query_usuario)
@@ -169,42 +174,70 @@ def _merge_results(
 
 
 def _collect_chroma_results(chroma_response: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Agrupa los fragmentos devueltos por Chroma en un único resultado por dataset
+    (metadata "doc_group"), ya que cada dataset se indexa como varios vectores
+    (estructura, contexto manual, análisis, relación). Se queda con el mejor score
+    de fragmento y concatena los textos únicos para dar contexto completo al reranker.
+    """
     documents = chroma_response.get("documents", [[]])[0]
     ids = chroma_response.get("ids", [[]])[0]
     metadatas = chroma_response.get("metadatas", [[]])[0]
     distances = chroma_response.get("distances", [[]])[0]
 
-    results = {}
+    results: Dict[str, Dict[str, Any]] = {}
     for idx, doc_id in enumerate(ids):
-        results[doc_id] = {
-            "document": documents[idx],
-            "metadata": metadatas[idx],
-            "score": 1.0 - distances[idx] if distances else 0.0,
-        }
+        metadata = metadatas[idx]
+        doc_group = metadata.get("doc_group", doc_id)
+        score = 1.0 - distances[idx] if distances else 0.0
+
+        if doc_group not in results:
+            results[doc_group] = {
+                "document": documents[idx],
+                "metadata": metadata,
+                "score": score,
+                "_fragmentos_vistos": {documents[idx]},
+            }
+        else:
+            item = results[doc_group]
+            if documents[idx] not in item["_fragmentos_vistos"]:
+                item["document"] = item["document"] + "\n" + documents[idx]
+                item["_fragmentos_vistos"].add(documents[idx])
+            if score > item["score"]:
+                item["score"] = score
+
+    for item in results.values():
+        item.pop("_fragmentos_vistos", None)
     return results
 
 
+# Cada dataset se indexa como hasta 4 fragmentos (vectores) independientes, así
+# que para conservar ~top_k datasets únicos hay que pedir más vectores en bruto.
+FRAGMENTOS_POR_DATASET = 4
+
+
 def _query_concept_embeddings(conceptos: List[str], top_k: int) -> List[Dict[str, Dict[str, Any]]]:
+    n_results = top_k * FRAGMENTOS_POR_DATASET
     results = []
     for concepto in conceptos:
         embedding_concepto = embedding_model.encode(concepto, normalize_embeddings=True, convert_to_numpy=True)
         resultado_concepto = collection.query(
             query_embeddings=[embedding_concepto.tolist()],
-            n_results=top_k,
+            n_results=n_results,
             include=["documents", "metadatas", "distances"],
         )
         results.append(_collect_chroma_results(resultado_concepto))
     return results
 
 
-def buscar(query_usuario, top_k=15):
+def buscar(query_usuario, top_k=15, umbral_rerank=UMBRAL_RERANK_FIJO):
     lista_conceptos, error_groq = mapear_conceptos_dinamico_con_groq(query_usuario)
     embedding_query = embedding_model.encode(query_usuario, normalize_embeddings=True, convert_to_numpy=True)
 
-    # búsqueda base con la query original
+    # búsqueda base con la query original (se piden más vectores en bruto porque
+    # cada dataset puede aportar varios fragmentos)
     resultado_base = collection.query(
         query_embeddings=[embedding_query.tolist()],
-        n_results=top_k,
+        n_results=top_k * FRAGMENTOS_POR_DATASET,
         include=["documents", "metadatas", "distances"],
     )
     base_results = _collect_chroma_results(resultado_base)
@@ -232,12 +265,32 @@ def buscar(query_usuario, top_k=15):
     with torch.no_grad():
         scores = model_rerank(**inputs).logits.view(-1).float().cpu().tolist()
 
-    reranked = [
-        (ids[i], documentos[i], metadatas[i], scores[i])
-        for i, score in enumerate(scores)
-        if score >= UMBRAL_RERANK_FIJO
-    ]
-    return sorted(reranked, key=lambda x: x[3], reverse=True), query_usuario, lista_conceptos, error_groq
+    todos_reranked = sorted(
+        (
+            (ids[i], documentos[i], metadatas[i], score)
+            for i, score in enumerate(scores)
+        ),
+        key=lambda x: x[3],
+        reverse=True,
+    )
+
+    reranked = [item for item in todos_reranked if item[3] >= umbral_rerank]
+
+    # Si nada supera el umbral (consulta muy específica o corpus pequeño), no
+    # devolvemos vacío sin más: se enseñan los mejores candidatos disponibles
+    # marcados como de baja confianza, para que el usuario decida.
+    baja_confianza = False
+    if not reranked and todos_reranked:
+        reranked = todos_reranked[:3]
+        baja_confianza = True
+
+    return reranked, query_usuario, lista_conceptos, error_groq, baja_confianza
+
+
+def score_a_relevancia_pct(score: float) -> float:
+    """Convierte el logit del reranker a un % de relevancia (0-100) más legible que
+    el logit crudo, vía sigmoide. Solo para mostrar en la UI, no cambia el orden."""
+    return 100.0 / (1.0 + math.exp(-score))
 
 # =========================================================
 # INTERFAZ DE USUARIO
@@ -246,7 +299,12 @@ st.title("Buscador")
 
 with st.sidebar:
     top_k = st.slider("Candidatos iniciales", 5, 50, 10) # Recomendado subirlo un poco para capturar más sinónimos
-    st.caption(f"Filtro Reranker: Score >= {UMBRAL_RERANK_FIJO}")
+    umbral_rerank = st.slider(
+        "Umbral de calidad del Reranker",
+        -6.0, 4.0, UMBRAL_RERANK_FIJO, 0.5,
+        help="Score mínimo del reranker (logit) para considerar un resultado relevante. "
+             "Más alto = más estricto (menos falsos positivos, más falsos negativos).",
+    )
 
 query = st.text_input("💬 Introduce tu consulta", placeholder="Ej: dataset de salinidad...")
 
@@ -255,11 +313,13 @@ if st.button("🔍 Buscar en el repositorio", type="primary"):
         st.warning("Por favor, escribe algo antes de buscar.")
     else:
         with st.spinner("Buscando candidatos y aplicando Reranking estricto..."):
-            resultados, query_usada, conceptos_extra, error_api = buscar(query, top_k=top_k)
-            
+            resultados, query_usada, conceptos_extra, error_api, baja_confianza = buscar(
+                query, top_k=top_k, umbral_rerank=umbral_rerank
+            )
+
         # --- PANEL DE CONTROL SEMÁNTICO ---
         if error_api:
-            st.error(f"❌ Error al conectar con Groq: `{error_api}`")
+            st.error(f"❌ Error al conectar con Ollama: `{error_api}`")
         elif conceptos_extra:
             st.write("### Sinónimos usados en la pre-búsqueda")
             st.pills("Conceptos detectados", conceptos_extra, disabled=True)
@@ -269,11 +329,28 @@ if st.button("🔍 Buscar en el repositorio", type="primary"):
 
         # --- SECCIÓN DE RESULTADOS ---
         if not resultados:
-            st.error("No se encontraron resultados que superen el umbral de calidad del Reranker.")
+            st.error("No se encontraron resultados ni siquiera de baja confianza. Prueba a reformular la consulta.")
         else:
-            st.success(f"✅ Se encontraron {len(resultados)} resultados ordenados por relevancia directa.")
+            if baja_confianza:
+                st.warning(
+                    "⚠️ Ningún resultado superó el umbral de calidad. Se muestran los mejores "
+                    "candidatos disponibles, pero su relevancia no está garantizada."
+                )
+            else:
+                st.success(f"✅ Se encontraron {len(resultados)} resultados ordenados por relevancia directa.")
             for i, (id_doc, doc, meta, score) in enumerate(resultados, 1):
-                with st.expander(f"✨ #{i} — {meta.get('archivo', 'Archivo')} (Relevancia: {score:.2f})"):
+                relevancia_pct = score_a_relevancia_pct(score)
+                etiqueta_confianza = " · baja confianza" if baja_confianza else ""
+                with st.expander(
+                    f"✨ #{i} — {meta.get('archivo', 'Archivo')} "
+                    f"(Relevancia: {relevancia_pct:.0f}%{etiqueta_confianza})"
+                ):
                     st.write(f"**Investigación:** {meta.get('investigacion', 'N/A')}")
                     st.write(f"**Autores:** {meta.get('autores', 'N/A')}")
                     st.text_area("Análisis:", value=doc, height=100, disabled=True, key=f"t_{id_doc}")
+
+                    url_dataverse = meta.get("dataverse_url", "")
+                    if url_dataverse:
+                        st.link_button("🔗 Ver en Dataverse", url_dataverse)
+                    else:
+                        st.caption("Sin enlace de Dataverse disponible para este dataset.")

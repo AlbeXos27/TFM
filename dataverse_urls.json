@@ -1,0 +1,6 @@
+{
+  "test::2.Dataset_SchoolMonitoring.csv": "http://localhost:8080/dataset.xhtml?persistentId=doi:10.5072/FK2/BTZXWG",
+  "test4::4.Supporting information.xlsx": "http://localhost:8080/dataset.xhtml?persistentId=doi:10.5072/FK2/DK2CPK",
+  "Monitoreo ambiental escolar::2.Dataset_SchoolMonitoring.csv": "http://localhost:8080/dataset.xhtml?persistentId=doi:10.5072/FK2/16AODM",
+  "Estudio calidad del aire escolar::2.Dataset_SchoolMonitoring.csv": "http://localhost:8080/dataset.xhtml?persistentId=doi:10.5072/FK2/CM5XBN"
+}

@@ -1,11 +1,14 @@
 import streamlit as st
-from ui.join_context_dataset import ui_join_context_dataset
-from ui.upload_articles import ui_upload_articles
 from ui.upload_dataset import ui_upload_datasets
+from client_ia.request_IA import carga_modelo
+from ui.upload_articles import ui_upload_articles
+from ui.join_context_dataset import ui_join_context_dataset
+import json
 
-API_KEY_GROQ = st.secrets["API_KEY_GROQ"]
-MODELO_LLM = st.secrets["MODELO_LLM"]
 st.set_page_config(layout="wide")
+
+
+
 
 # Inicialización segura de st.session_state
 if 'analisis_datasets' not in st.session_state:
@@ -30,9 +33,10 @@ datasets_dict = st.session_state.datasets_dict
 ui_upload_datasets(datasets_dict, st)
 
 st.header("2. Artículos")
+
 articulos_dict = st.session_state.articulos_dict
 ui_upload_articles(articulos_dict, st)
 
 if datasets_dict or st.session_state.analisis_datasets:
-    ui_join_context_dataset(datasets_dict, articulos_dict, st)
+    ui_join_context_dataset(datasets_dict, articulos_dict, st) 
 
