@@ -9,6 +9,17 @@ from easyDataverse import Dataverse
 from easyDataverse.license import License
 from client_ia.request_IA import extraer_subjects
 
+# Evita que dvuploader agrupe varios ficheros en un "package_N.zip" temporal:
+# en Windows, dvuploader (dependencia de easyDataverse) abre ese zip con
+# open() y nunca cierra el handle explícitamente (dvuploader/file.py,
+# get_handler()), por lo que al terminar la subida su
+# tempfile.TemporaryDirectory() falla al borrar el fichero con
+# "WinError 32: el proceso no tiene acceso al archivo porque está siendo
+# utilizado por otro proceso". Forzando el umbral de empaquetado a 1 byte,
+# cada fichero se sube individualmente (sin zip intermedio) y el bug no se
+# activa. Se respeta si el usuario ya definió la variable explícitamente.
+os.environ.setdefault("DVUPLOADER_MAX_PKG_SIZE", "1")
+
 
 def _cargar_registro_urls(ruta_registro):
     if not ruta_registro.exists():
@@ -74,6 +85,38 @@ def resolver_licencia_dataverse(identificador_portable, config):
     return None
 
 
+def _esperar_desbloqueo_dataset(dataset_pid, config, timeout=180, intervalo=3):
+    """
+    Espera (sondeando '/locks') a que un dataset recién creado quede libre de
+    bloqueos antes de intentar modificarlo. Justo tras la creación, Dataverse
+    puede mantenerlo bloqueado mientras ingiere los ficheros adjuntos (p.ej.
+    conversión de CSV a .tab), lo cual puede tardar bastante más que unos
+    pocos segundos si el fichero es grande o el servidor está ocupado.
+    """
+    server_url = config.get("DATAVERSE_URL", "").rstrip("/")
+    headers = {"X-Dataverse-key": config.get("API_TOKEN", "")}
+    transcurrido = 0
+    while transcurrido < timeout:
+        try:
+            respuesta = httpx.get(
+                f"{server_url}/api/datasets/:persistentId/locks",
+                params={"persistentId": dataset_pid},
+                headers=headers,
+                timeout=10,
+            )
+            respuesta.raise_for_status()
+            if not respuesta.json().get("data", []):
+                return
+        except Exception:
+            # Si no se puede consultar el estado de bloqueo, seguimos con el
+            # sondeo por tiempo en vez de abortar aquí.
+            pass
+        time.sleep(intervalo)
+        transcurrido += intervalo
+
+    print(f"⚠️ El dataset {dataset_pid} sigue bloqueado tras {timeout}s de espera.")
+
+
 def _aplicar_licencia_tras_creacion(dataset_pid, licencia, config):
     """
     Asigna la licencia a un dataset ya creado mediante el endpoint dedicado
@@ -83,12 +126,21 @@ def _aplicar_licencia_tras_creacion(dataset_pid, licencia, config):
     subir) porque easyDataverse 0.4.4 serializa ese campo como un string
     plano en el JSON de creación del dataset en vez del objeto {name, uri}
     que espera la API, y Dataverse lo ignora silenciosamente.
+
+    Si tras los reintentos no se puede asignar, se lanza una excepción en
+    vez de continuar en silencio: de lo contrario el dataset queda publicado
+    con la licencia por defecto del servidor (CC0) sin que nadie se entere,
+    y el pipeline lo marca igualmente como subida exitosa (ver
+    ejecutar_pipeline_dataverse), por lo que nunca se reintentaría.
     """
     if licencia is None or not dataset_pid:
         return
 
+    _esperar_desbloqueo_dataset(dataset_pid, config)
+
     server_url = config.get("DATAVERSE_URL", "").rstrip("/")
-    intentos = 3
+    intentos = 6
+    ultimo_error = None
     for intento in range(1, intentos + 1):
         try:
             respuesta = httpx.put(
@@ -102,18 +154,26 @@ def _aplicar_licencia_tras_creacion(dataset_pid, licencia, config):
             print(f"   ✓ Licencia '{licencia.name}' asignada al dataset.")
             return
         except httpx.HTTPStatusError as e:
-            # El dataset puede estar brevemente bloqueado justo tras su creación
-            # mientras Dataverse procesa la ingesta de los ficheros adjuntos
-            # (p.ej. conversión a .tab); reintentamos antes de darnos por vencidos.
+            # El dataset puede seguir bloqueado justo tras su creación mientras
+            # Dataverse procesa la ingesta de los ficheros adjuntos (p.ej.
+            # conversión a .tab); reintentamos antes de darnos por vencidos.
             cuerpo = e.response.text[:300] if e.response is not None else ""
+            ultimo_error = f"{e} — {cuerpo}"
             if intento < intentos:
                 print(f"   ⏳ Licencia no asignada aún (intento {intento}/{intentos}, {e.response.status_code if e.response is not None else '?'}): {cuerpo}. Reintentando...")
-                time.sleep(2 * intento)
+                time.sleep(3 * intento)
                 continue
-            print(f"⚠️ No se pudo asignar la licencia '{licencia.name}' al dataset {dataset_pid}: {e} — {cuerpo}")
         except Exception as e:
-            print(f"⚠️ No se pudo asignar la licencia '{licencia.name}' al dataset {dataset_pid}: {e}")
-            return
+            ultimo_error = str(e)
+            if intento < intentos:
+                print(f"   ⏳ Error al asignar la licencia (intento {intento}/{intentos}): {e}. Reintentando...")
+                time.sleep(3 * intento)
+                continue
+
+    raise RuntimeError(
+        f"No se pudo asignar la licencia '{licencia.name}' al dataset {dataset_pid} "
+        f"tras {intentos} intentos: {ultimo_error}"
+    )
 
 def buscar_archivo_en_carpeta(ruta_carpeta, nombre_archivo, subcarpetas=None):
     """Busca un archivo dentro de la carpeta raíz o en subcarpetas conocidas."""
@@ -285,7 +345,21 @@ def ejecutar_pipeline_dataverse(config):
                 if pdf_nombre and pdf_nombre not in archivos_ya_adjuntados:
                     fichero_pdf = buscar_archivo_en_carpeta(ruta_carpeta, pdf_nombre, subcarpetas=["articulos"])
                     if fichero_pdf is not None:
-                        dataset.add_file(local_path=str(fichero_pdf), description=f"Documento académico original: {pdf_nombre}")
+                        partes_descripcion_pdf = [f"Documento académico original: {pdf_nombre}"]
+                        if contexto:
+                            partes_descripcion_pdf.append(contexto)
+
+                        relaciones_datasets_articulo = articulo.get("relaciones_datasets", [])
+                        if isinstance(relaciones_datasets_articulo, list):
+                            for relacion in relaciones_datasets_articulo:
+                                texto_relacion = relacion.get("relacion_con_contexto", "").strip()
+                                if texto_relacion and texto_relacion != "Sin relación generada.":
+                                    nombre_dataset_relacionado = relacion.get("nombre_dataset", "")
+                                    partes_descripcion_pdf.append(
+                                        f"Relación con '{nombre_dataset_relacionado}': {texto_relacion}"
+                                    )
+
+                        dataset.add_file(local_path=str(fichero_pdf), description="\n\n".join(partes_descripcion_pdf))
                         archivos_ya_adjuntados.add(pdf_nombre)
                         print(f"   ✓ PDF vinculado: {pdf_nombre}")
                     else:
