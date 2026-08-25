@@ -13,7 +13,6 @@ El proyecto automatiza el flujo completo de curación de datos de investigación
 - [Instalación](#instalación)
 - [Uso](#uso)
 - [Evaluación de modelos](#evaluación-de-modelos)
-- [Notas técnicas](#notas-técnicas)
 
 ## Características
 
@@ -56,7 +55,7 @@ Todas las llamadas a modelos de lenguaje viven en `client_ia/request_IA.py`, que
 
 ### Persistencia
 
-Cada carpeta de proyecto se guarda en `investigaciones/<nombre>/` con sus datasets, artículos y un `metadatos.json` canónico (título, autores, contexto, relaciones, licencia, DOI y hash de integridad SHA-256). Este fichero es el contrato compartido entre la indexación y la subida a Dataverse.
+Cada carpeta de proyecto se guarda en `investigaciones/<nombre>/` con sus datasets, artículos y un `metadatos.json` canónico (título, autores, contexto, relaciones, licencia, DOI y hash de integridad SHA-256).
 
 ### Búsqueda (`busqueda.py`)
 
@@ -136,11 +135,9 @@ pip install "torch==2.12.0+cu132" "torchvision==0.27.0" --index-url https://down
 pip install -r requirements.txt
 ```
 
-`requirements.txt` está codificado en **UTF-16** (no UTF-8) — si lo editas con herramientas que asumen UTF-8 lo corromperás. Usa un editor que respete la codificación existente, o vuelve a guardarlo como UTF-16LE con CRLF (p.ej. PowerShell `... | Out-File -Encoding unicode requirements.txt`, no `Set-Content`). Se regenera desde el venv activo con `env\Scripts\pip.exe freeze`.
-
 ### 4. Configurar Dataverse
 
-Edita `upload_platform/API_DATAVERSE/config.json` con `DATAVERSE_URL`, `API_TOKEN`, `PARENT_COLLECTION` y datos de contacto de tu instancia de Dataverse. **Este archivo contiene un token de API — trátalo como secreto**, no lo subas al repositorio.
+Edita `upload_platform/API_DATAVERSE/config.json` con `DATAVERSE_URL`, `API_TOKEN`, `PARENT_COLLECTION` y datos de contacto de tu instancia de Dataverse. **Este archivo contiene un token de API — trátalo como secreto**.
 
 ## Uso
 
@@ -150,7 +147,7 @@ streamlit run app.py        # pipeline de ingesta
 streamlit run busqueda.py   # interfaz de búsqueda
 ```
 
-Streamlit debe lanzarse desde la raíz del repo (usa `./config.json` con ruta relativa).
+Streamlit debe lanzarse desde la raíz del repositorio (usa `./config.json` con ruta relativa).
 
 1. En `app.py`: sube tus datasets y artículos, revisa/edita los metadatos y autores propuestos por el LLM, agrúpalos en una carpeta de proyecto y pulsa **"Guardar Todo"** para persistir, publicar en Dataverse e indexar.
 2. En `busqueda.py`: escribe una consulta en lenguaje natural y explora los resultados reordenados semánticamente, con enlace directo al dataset publicado en Dataverse.
@@ -166,25 +163,5 @@ python test/generate_resume_datasets.py
 ```
 
 Comparan la extracción de metadatos de varios modelos locales (llama3.2, qwen3.5, granite4.1) frente a una referencia GPT, usando similitud semántica (`BAAI/bge-m3`) y generando tablas/gráficas resumen.
-
-## Notas técnicas
-
-### Ajustes de versiones en `requirements.txt`
-
-Algunas versiones se ajustaron respecto al `pip freeze` original porque `dvuploader==0.3.3` (dependencia de `easyDataverse`, usada para subir a Dataverse) exige límites superiores más estrictos que otros paquetes del proyecto:
-
-| Paquete | Ajuste | Motivo |
-|---|---|---|
-| `rich` | `15.0.0` → `13.9.4` | `dvuploader` requiere `<14.0.0` |
-| `tenacity` | `9.1.4` → `8.5.0` | `dvuploader` requiere `<9.0.0` |
-| `typer` | `0.25.1` → `0.15.4` | `dvuploader` requiere `<0.16` |
-| `click` | `8.3.3` → `8.1.8` | `typer<0.16` requiere `click<8.2` |
-| `huggingface_hub` | `1.14.0` → `1.13.0` | la 1.14.0 exige `typer>=0.20.0`, incompatible con el límite de `dvuploader` |
-
-### Privacidad y ejecución local
-
-Todas las llamadas a modelos de lenguaje se realizan contra un servidor Ollama local — no se envían datos a APIs externas ni se requieren claves de API para la extracción de metadatos. Los únicos servicios externos consultados son la API pública de ORCID (sin autenticación) y, opcionalmente, la instancia de Dataverse configurada para la publicación.
-
----
 
 Proyecto desarrollado como Trabajo de Fin de Máster.
