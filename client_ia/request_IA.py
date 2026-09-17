@@ -414,7 +414,7 @@ def extraer_metadatos_articles(st, articulo_name, articulo):
         {articulo}
         --- FIN DEL ARTÍCULO ---
                                     
-        En cuanto a las keywords quiero que las extraigas de los articulos, no inventes palabras clave. Si no hay keywords explícitas, no escribas nada en el campo "keywords". 
+        En cuanto a las keywords quiero que las extraigas de los articulos, no inventes palabras clave. Mantén las keywords en el idioma original en el que aparecen en el artículo, NO las traduzcas al español ni a ningún otro idioma. Si no hay keywords explícitas, no escribas nada en el campo "keywords".
         Si no hay DOI explícito, no escribas nada en el campo "doi".
         Con language, si el artículo está en español, pon "es", si está en inglés, pon "en". No inventes idiomas.
         El resumen del articulo debe estar en español, si el artículo está en inglés, tradúcelo al español. No inventes resúmenes.

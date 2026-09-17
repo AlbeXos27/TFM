@@ -1,13 +1,4 @@
 import os
-import json
-import re
-import time
-import httpx
-from pathlib import Path
-from urllib.parse import urljoin
-from easyDataverse import Dataverse
-from easyDataverse.license import License
-from client_ia.request_IA import extraer_subjects
 
 # Evita que dvuploader agrupe varios ficheros en un "package_N.zip" temporal:
 # en Windows, dvuploader (dependencia de easyDataverse) abre ese zip con
@@ -18,7 +9,20 @@ from client_ia.request_IA import extraer_subjects
 # utilizado por otro proceso". Forzando el umbral de empaquetado a 1 byte,
 # cada fichero se sube individualmente (sin zip intermedio) y el bug no se
 # activa. Se respeta si el usuario ya definió la variable explícitamente.
+# IMPORTANTE: esto debe ejecutarse ANTES de importar easyDataverse, porque
+# easyDataverse importa dvuploader en cadena y dvuploader/packaging.py lee
+# esta variable de entorno en el momento de importarse (una sola vez).
 os.environ.setdefault("DVUPLOADER_MAX_PKG_SIZE", "1")
+
+import json
+import re
+import time
+import httpx
+from pathlib import Path
+from urllib.parse import urljoin
+from easyDataverse import Dataverse
+from easyDataverse.license import License
+from client_ia.request_IA import extraer_subjects
 
 
 def _cargar_registro_urls(ruta_registro):

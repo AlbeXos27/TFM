@@ -1,3 +1,4 @@
+import streamlit as st_module
 from upload_platform.upload_to_platform import upload_files_to_dataverse
 from utils.creacion_embedding import procesar_y_estructurar_indice
 from utils.save_json import guardar_json
@@ -6,6 +7,7 @@ from client_ia.request_IA import mapeo_relaciones_cruzadas, relacion_dataset_con
 
 
 
+@st_module.fragment
 def ui_join_context_dataset(datasets_dict, articulos_dict, st):
 
     st.header("3. Combinaciones Resultantes de Datasets y Artículos")
